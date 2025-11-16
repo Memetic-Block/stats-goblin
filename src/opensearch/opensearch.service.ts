@@ -1,19 +1,14 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Client } from '@opensearch-project/opensearch'
-import { SearchMetricEvent } from '../metrics/interfaces/search-metric-event.interface'
 
 @Injectable()
 export class OpenSearchService implements OnModuleInit {
   private readonly logger = new Logger(OpenSearchService.name)
   private client: Client
-  private readonly indexPrefix: string
-  private readonly retentionDays: number
 
   constructor(private configService: ConfigService) {
     const config = this.configService.get('opensearch')
-    this.indexPrefix = config.metricsIndexPrefix
-    this.retentionDays = config.retentionDays
 
     const clientConfig: any = {
       node: config.node
@@ -39,98 +34,71 @@ export class OpenSearchService implements OnModuleInit {
       this.logger.log(
         `Connected to OpenSearch cluster: ${health.body.cluster_name}`
       )
-      await this.createIndexTemplate()
+      
+      // Check if UBI plugin is installed
+      const ubiPluginInstalled = await this.checkUbiPlugin()
+      if (ubiPluginInstalled) {
+        this.logger.log('UBI plugin detected and ready')
+      } else {
+        this.logger.warn('UBI plugin not detected - please install the OpenSearch UBI plugin')
+      }
     } catch (error) {
       this.logger.error('Failed to connect to OpenSearch', error)
     }
   }
 
-  private async createIndexTemplate() {
-    const templateName = `${this.indexPrefix}-template`
-
+  /**
+   * Check if the UBI plugin is installed
+   */
+  async checkUbiPlugin(): Promise<boolean> {
     try {
-      await this.client.indices.putIndexTemplate({
-        name: templateName,
-        body: {
-          index_patterns: [`${this.indexPrefix}-*`],
-          template: {
-            settings: {
-              number_of_shards: 1,
-              number_of_replicas: 1,
-              'index.lifecycle.name': `${this.indexPrefix}-policy`,
-              'index.lifecycle.rollover_alias': this.indexPrefix
-            },
-            mappings: {
-              properties: {
-                requestId: { type: 'keyword' },
-                query: {
-                  type: 'text',
-                  fields: { keyword: { type: 'keyword' } }
-                },
-                offset: { type: 'integer' },
-                executionTimeMs: { type: 'integer' },
-                totalResults: { type: 'integer' },
-                hitsCount: { type: 'integer' },
-                timestamp: { type: 'date' },
-                userAgent: {
-                  type: 'text',
-                  fields: { keyword: { type: 'keyword' } }
-                },
-                hits: {
-                  type: 'nested',
-                  properties: {
-                    documentId: { type: 'keyword' },
-                    urlHost: { type: 'keyword' },
-                    urlPath: {
-                      type: 'text',
-                      fields: { keyword: { type: 'keyword' } }
-                    },
-                    score: { type: 'float' }
-                  }
-                }
-              }
-            }
-          }
-        }
-      })
-
-      this.logger.log(`Index template ${templateName} created successfully`)
+      const response = await this.client.cat.plugins({ format: 'json' })
+      const plugins = response.body as Array<{ component: string }>
+      return plugins.some(p => p.component && p.component.includes('ubi'))
     } catch (error) {
-      this.logger.warn(`Failed to create index template: ${error.message}`)
+      this.logger.error('Failed to check UBI plugin status', error)
+      return false
     }
   }
 
-  private getIndexName(date: Date = new Date()): string {
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-    return `${this.indexPrefix}-${year}-${month}-${day}`
+  /**
+   * Query the ubi_queries index
+   */
+  async queryUbiQueries(params: any) {
+    return this.client.search({
+      index: 'ubi_queries',
+      ...params
+    })
   }
 
-  async indexMetric(event: SearchMetricEvent): Promise<void> {
-    const indexName = this.getIndexName(new Date(event.timestamp))
-
-    try {
-      await this.client.index({
-        index: indexName,
-        body: event,
-        id: event.requestId
-      })
-
-      this.logger.debug(`Indexed metric: ${event.requestId}`)
-    } catch (error) {
-      this.logger.error(
-        `Failed to index metric ${event.requestId}: ${error.message}`
-      )
-      throw error
-    }
+  /**
+   * Query the ubi_events index
+   */
+  async queryUbiEvents(params: any) {
+    return this.client.search({
+      index: 'ubi_events',
+      ...params
+    })
   }
 
+  /**
+   * Generic search method for custom queries
+   */
   async search(params: any) {
     return this.client.search(params)
   }
 
+  /**
+   * Get the OpenSearch client for advanced operations
+   */
   getClient(): Client {
     return this.client
+  }
+
+  /**
+   * Check cluster health
+   */
+  async getClusterHealth() {
+    return this.client.cluster.health()
   }
 }

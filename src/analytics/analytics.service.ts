@@ -1,35 +1,27 @@
 import { Injectable, Logger } from '@nestjs/common'
-import { ConfigService } from '@nestjs/config'
 import { OpenSearchService } from '../opensearch/opensearch.service'
 import {
   TopSearchResult,
-  ZeroResultQuery,
   PopularDocument,
-  PerformanceTrend,
+  EventsByAction,
   SearchStatsResponse
 } from './interfaces/analytics.interface'
 
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name)
-  private readonly indexPrefix: string
 
-  constructor(
-    private readonly openSearchService: OpenSearchService,
-    private readonly configService: ConfigService
-  ) {
-    this.indexPrefix =
-      this.configService.get('opensearch.metricsIndexPrefix') ||
-      'search-metrics'
-  }
+  constructor(private readonly openSearchService: OpenSearchService) {}
 
+  /**
+   * Get top searches from UBI queries index
+   */
   async getTopSearches(
     startDate: string,
     endDate: string,
     limit: number = 10
   ): Promise<TopSearchResult[]> {
-    const result = await this.openSearchService.search({
-      index: `${this.indexPrefix}-*`,
+    const result = await this.openSearchService.queryUbiQueries({
       body: {
         size: 0,
         query: {
@@ -43,18 +35,13 @@ export class AnalyticsService {
         aggs: {
           top_queries: {
             terms: {
-              field: 'query.keyword',
+              field: 'user_query.keyword',
               size: limit
             },
             aggs: {
-              avg_execution_time: {
-                avg: {
-                  field: 'executionTimeMs'
-                }
-              },
-              avg_total_results: {
-                avg: {
-                  field: 'totalResults'
+              unique_users: {
+                cardinality: {
+                  field: 'client_id.keyword'
                 }
               }
             }
@@ -67,19 +54,20 @@ export class AnalyticsService {
       (bucket: any) => ({
         query: bucket.key,
         count: bucket.doc_count,
-        avgExecutionTimeMs: Math.round(bucket.avg_execution_time.value),
-        avgTotalResults: Math.round(bucket.avg_total_results.value)
+        uniqueUsers: bucket.unique_users.value
       })
     )
   }
 
-  async getZeroResultQueries(
+  /**
+   * Get popular documents from UBI events (click events)
+   */
+  async getPopularDocuments(
     startDate: string,
     endDate: string,
     limit: number = 10
-  ): Promise<ZeroResultQuery[]> {
-    const result = await this.openSearchService.search({
-      index: `${this.indexPrefix}-*`,
+  ): Promise<PopularDocument[]> {
+    const result = await this.openSearchService.queryUbiEvents({
       body: {
         size: 0,
         query: {
@@ -95,22 +83,22 @@ export class AnalyticsService {
               },
               {
                 term: {
-                  totalResults: 0
+                  action_name: 'click'
                 }
               }
             ]
           }
         },
         aggs: {
-          zero_result_queries: {
+          popular_docs: {
             terms: {
-              field: 'query.keyword',
+              field: 'event_attributes.object.object_id.keyword',
               size: limit
             },
             aggs: {
-              last_occurrence: {
-                max: {
-                  field: 'timestamp'
+              unique_users: {
+                cardinality: {
+                  field: 'client_id.keyword'
                 }
               }
             }
@@ -119,22 +107,24 @@ export class AnalyticsService {
       }
     })
 
-    return (result.body.aggregations as any).zero_result_queries.buckets.map(
+    return (result.body.aggregations as any).popular_docs.buckets.map(
       (bucket: any) => ({
-        query: bucket.key,
-        count: bucket.doc_count,
-        lastOccurrence: bucket.last_occurrence.value_as_string
+        documentId: bucket.key,
+        clickCount: bucket.doc_count,
+        uniqueUsers: bucket.unique_users.value
       })
     )
   }
 
-  async getPopularDocuments(
+  /**
+   * Get events grouped by action type
+   */
+  async getEventsByAction(
     startDate: string,
     endDate: string,
     limit: number = 10
-  ): Promise<PopularDocument[]> {
-    const result = await this.openSearchService.search({
-      index: `${this.indexPrefix}-*`,
+  ): Promise<EventsByAction[]> {
+    const result = await this.openSearchService.queryUbiEvents({
       body: {
         size: 0,
         query: {
@@ -146,163 +136,102 @@ export class AnalyticsService {
           }
         },
         aggs: {
-          popular_docs: {
-            nested: {
-              path: 'hits'
-            },
-            aggs: {
-              by_document: {
-                terms: {
-                  field: 'hits.documentId',
-                  size: limit
-                },
-                aggs: {
-                  avg_score: {
-                    avg: {
-                      field: 'hits.score'
-                    }
-                  },
-                  url_host: {
-                    terms: {
-                      field: 'hits.urlHost',
-                      size: 1
-                    }
-                  },
-                  url_path: {
-                    terms: {
-                      field: 'hits.urlPath.keyword',
-                      size: 1
-                    }
-                  }
-                }
-              }
+          actions: {
+            terms: {
+              field: 'action_name.keyword',
+              size: limit
             }
           }
         }
       }
     })
 
-    return (
-      result.body.aggregations as any
-    ).popular_docs.by_document.buckets.map((bucket: any) => ({
-      documentId: bucket.key,
-      urlHost: bucket.url_host.buckets[0]?.key || '',
-      urlPath: bucket.url_path.buckets[0]?.key || '',
-      appearances: bucket.doc_count,
-      avgScore: bucket.avg_score.value
-    }))
-  }
-
-  async getPerformanceTrends(
-    startDate: string,
-    endDate: string,
-    interval: string = '1h'
-  ): Promise<PerformanceTrend[]> {
-    const result = await this.openSearchService.search({
-      index: `${this.indexPrefix}-*`,
-      body: {
-        size: 0,
-        query: {
-          range: {
-            timestamp: {
-              gte: startDate,
-              lte: endDate
-            }
-          }
-        },
-        aggs: {
-          trends: {
-            date_histogram: {
-              field: 'timestamp',
-              fixed_interval: interval
-            },
-            aggs: {
-              avg_execution_time: {
-                avg: {
-                  field: 'executionTimeMs'
-                }
-              },
-              percentiles_execution_time: {
-                percentiles: {
-                  field: 'executionTimeMs',
-                  percents: [50, 95, 99]
-                }
-              }
-            }
-          }
-        }
-      }
-    })
-
-    return (result.body.aggregations as any).trends.buckets.map(
+    return (result.body.aggregations as any).actions.buckets.map(
       (bucket: any) => ({
-        interval: bucket.key_as_string,
-        avgExecutionTimeMs: Math.round(bucket.avg_execution_time.value),
-        totalSearches: bucket.doc_count,
-        p50ExecutionTimeMs: Math.round(
-          bucket.percentiles_execution_time.values['50.0']
-        ),
-        p95ExecutionTimeMs: Math.round(
-          bucket.percentiles_execution_time.values['95.0']
-        ),
-        p99ExecutionTimeMs: Math.round(
-          bucket.percentiles_execution_time.values['99.0']
-        )
+        action: bucket.key,
+        count: bucket.doc_count
       })
     )
   }
 
-  async getSearchStats(
+  /**
+   * Get overall statistics from UBI data
+   */
+  async getStats(
     startDate: string,
     endDate: string
   ): Promise<SearchStatsResponse> {
-    const result = await this.openSearchService.search({
-      index: `${this.indexPrefix}-*`,
-      body: {
-        size: 0,
-        query: {
-          range: {
-            timestamp: {
-              gte: startDate,
-              lte: endDate
-            }
-          }
-        },
-        aggs: {
-          unique_queries: {
-            cardinality: {
-              field: 'query.keyword'
+    const [queriesResult, eventsResult] = await Promise.all([
+      this.openSearchService.queryUbiQueries({
+        body: {
+          size: 0,
+          query: {
+            range: {
+              timestamp: {
+                gte: startDate,
+                lte: endDate
+              }
             }
           },
-          avg_execution_time: {
-            avg: {
-              field: 'executionTimeMs'
-            }
-          },
-          zero_results: {
-            filter: {
-              term: {
-                totalResults: 0
+          aggs: {
+            total_queries: {
+              value_count: {
+                field: 'query_id.keyword'
+              }
+            },
+            unique_queries: {
+              cardinality: {
+                field: 'user_query.keyword'
+              }
+            },
+            unique_users: {
+              cardinality: {
+                field: 'client_id.keyword'
               }
             }
           }
         }
-      }
-    })
+      }),
+      this.openSearchService.queryUbiEvents({
+        body: {
+          size: 0,
+          query: {
+            range: {
+              timestamp: {
+                gte: startDate,
+                lte: endDate
+              }
+            }
+          },
+          aggs: {
+            total_events: {
+              value_count: {
+                field: 'query_id.keyword'
+              }
+            },
+            top_actions: {
+              terms: {
+                field: 'action_name.keyword',
+                size: 5
+              }
+            }
+          }
+        }
+      })
+    ])
 
-    const totalSearches =
-      typeof result.body.hits.total === 'number'
-        ? result.body.hits.total
-        : result.body.hits.total?.value || 0
-    const zeroResults = (result.body.aggregations as any).zero_results.doc_count
+    const queriesAggs = queriesResult.body.aggregations as any
+    const eventsAggs = eventsResult.body.aggregations as any
 
     return {
-      totalSearches,
-      uniqueQueries: (result.body.aggregations as any).unique_queries.value,
-      avgExecutionTimeMs: Math.round(
-        (result.body.aggregations as any).avg_execution_time.value
-      ),
-      zeroResultRate: totalSearches > 0 ? zeroResults / totalSearches : 0
+      totalQueries: queriesAggs.total_queries.value,
+      uniqueQueries: queriesAggs.unique_queries.value,
+      totalEvents: eventsAggs.total_events.value,
+      uniqueUsers: queriesAggs.unique_users.value,
+      topActions: eventsAggs.top_actions.buckets.map((bucket: any) => ({
+        action: bucket.key,
+        count: bucket.doc_count
+      }))
     }
   }
 }

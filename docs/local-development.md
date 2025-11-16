@@ -1,6 +1,6 @@
 # Local Development Guide
 
-Quick setup guide for running Stats Goblin locally.
+Quick setup guide for running Analytics Goblin locally.
 
 ## Prerequisites
 
@@ -8,12 +8,16 @@ Quick setup guide for running Stats Goblin locally.
 - Docker and Docker Compose (for infrastructure)
 - Git
 
+## Important: UBI Plugin Required
+
+This service requires the **OpenSearch User Behavior Insights (UBI) plugin** to be installed on your OpenSearch cluster. The plugin automatically captures queries and events in `ubi_queries` and `ubi_events` indices.
+
 ## Initial Setup
 
 ### 1. Clone and Install
 
 ```bash
-cd stats-goblin
+cd analytics-goblin
 npm install
 ```
 
@@ -43,12 +47,12 @@ cp .env.example .env
 
 Default `.env` for local development:
 ```bash
-# Redis
+# Redis (Rate Limiter Storage Only)
 REDIS_MODE=standalone
 REDIS_HOST=localhost
 REDIS_PORT=6379
 
-# OpenSearch
+# OpenSearch (with UBI plugin)
 OPENSEARCH_HOST=http://localhost:9200
 OPENSEARCH_USERNAME=admin
 OPENSEARCH_PASSWORD=admin
@@ -56,11 +60,15 @@ OPENSEARCH_PASSWORD=admin
 # Application
 PORT=3001
 CORS_ALLOWED_ORIGIN=*
-QUEUE_NAME=search-metrics
 
-# Metrics
-METRICS_INDEX_PREFIX=search-metrics
-METRICS_RETENTION_DAYS=30
+# Rate Limiting (IP anonymization enabled)
+THROTTLE_GLOBAL_LIMIT=20
+THROTTLE_BURST_LIMIT=3
+
+# Client Validation
+ALLOWED_CLIENT_NAMES=web,mobile-ios,mobile-android
+
+# GDPR: No server-side sessions, IPs anonymized
 ```
 
 ### 4. Run the Application
@@ -76,7 +84,8 @@ You should see:
 ```
 [Nest] INFO [NestApplication] Nest application successfully started
 [Nest] INFO [OpenSearchService] Connected to OpenSearch cluster: docker-cluster
-Stats Goblin Mode ON @ port 3001
+Analytics Goblin running on port 3001
+GDPR Mode: Client-side sessions, anonymized IPs, no tracking
 ```
 
 ## Verify Setup
@@ -90,14 +99,17 @@ curl http://localhost:3001/health
 Expected response:
 ```json
 {
-  "status": "healthy",
-  "timestamp": "2025-11-14T10:00:00.000Z",
-  "services": {
+  "status": "ok",
+  "info": {
     "redis": {
+      "status": "up"
+    },
+    "opensearch": {
       "status": "up",
-      "details": {
-        "waiting": 0,
-        "active": 0,
+      "ubiPluginInstalled": true
+    }
+  }
+}
         "completed": 0,
         "failed": 0
       }
@@ -125,97 +137,104 @@ curl http://localhost:9200/_cluster/health
 curl http://localhost:9200/_cat/indices?v
 ```
 
-### Check Redis
+### Check OpenSearch UBI Plugin
+
+```bash
+# Check if UBI plugin is installed
+curl http://localhost:9200/_cat/plugins
+
+# Should show: opensearch-ubi
+
+# Check UBI indices
+curl http://localhost:9200/_cat/indices?v | grep ubi
+```
+
+### Check Redis (Rate Limiter)
 
 ```bash
 # Connect to Redis CLI in Docker
 docker exec -it $(docker ps -q -f name=redis) redis-cli
 
-# Check queue
-redis> KEYS *
-redis> LLEN bull:search-metrics:wait
+# Check rate limiter keys (anonymized IPs)
+redis> KEYS throttler:*
 redis> exit
 ```
 
-## Testing the Pipeline
+## Testing the UBI Integration
 
-### 1. Publish a Test Event
+### 1. Install UBI Plugin (if not already installed)
 
-Create a test script `scripts/publish-test-event.js`:
+```bash
+# Inside OpenSearch container or on your OpenSearch server
+bin/opensearch-plugin install https://github.com/opensearch-project/user-behavior-insights/releases/download/latest/opensearch-ubi-plugin.zip
+
+# Restart OpenSearch
+docker-compose restart opensearch
+```
+
+### 2. Verify UBI Plugin
+
+```bash
+curl http://localhost:9200/_cat/plugins
+# Should show: opensearch-ubi
+
+curl http://localhost:3001/health/opensearch
+# Should show: "ubiPluginInstalled": true
+```
+
+### 3. Test Session Initialization
+
+```bash
+curl "http://localhost:3001/session/init?client_name=web&client_version=1.0.0"
+
+# Returns:
+# {
+#   "session_id": "550e8400-e29b-41d4-a716-446655440000",
+#   "client_id": "web@1.0.0@550e8400-e29b-41d4-a716-446655440000"
+# }
+# Note: No cookies set
+```
+
+### 4. Simulate UBI Data (via your Search API)
+
+Your search API (with UBI plugin) should send queries with the client_id:
 
 ```javascript
-const { Queue } = require('bullmq');
-
-async function publishTestEvent() {
-  const queue = new Queue('search-metrics', {
-    connection: {
-      host: 'localhost',
-      port: 6379,
-    },
-  });
-
-  const event = {
-    requestId: `test-${Date.now()}`,
-    query: 'nestjs microservices',
-    offset: 0,
-    executionTimeMs: 42,
-    totalResults: 150,
-    hitsCount: 10,
-    hits: [
-      {
-        documentId: 'doc-123',
-        urlHost: 'docs.example.com',
-        urlPath: '/guides/microservices',
-        score: 9.5,
-      },
-      {
-        documentId: 'doc-456',
-        urlHost: 'docs.example.com',
-        urlPath: '/tutorials/nestjs',
-        score: 8.2,
-      },
-    ],
-    timestamp: new Date().toISOString(),
-    userAgent: 'Mozilla/5.0 Test Client',
-  };
-
-  await queue.add('search-metric', event);
-  console.log('Test event published:', event.requestId);
-
-  await queue.close();
+// Example: Your search API code
+POST /your-index/_search
+{
+  "ext": {
+    "ubi": {
+      "client_id": "web@1.0.0@550e8400-e29b-41d4-a716-446655440000"
+    }
+  },
+  "query": {
+    "match": { "content": "nestjs tutorial" }
+  }
 }
-
-publishTestEvent().catch(console.error);
 ```
 
-Run it:
-```bash
-node scripts/publish-test-event.js
-```
+The UBI plugin will automatically populate `ubi_queries` and `ubi_events` indices.
 
-### 2. Verify Event Processing
-
-Check the application logs - you should see:
-```
-[Nest] LOG [MetricsConsumer] Processing metric event: ...
-[Nest] LOG [MetricsConsumer] Successfully indexed metric ...
-```
-
-### 3. Query the Data
+### 5. Query UBI Data
 
 ```bash
-# Check if index was created
-curl http://localhost:9200/_cat/indices?v | grep search-metrics
+# Check if UBI indices exist
+curl "http://localhost:9200/_cat/indices?v" | grep ubi
 
-# Query the event
-TODAY=$(date -u +%Y-%m-%d)
-curl "http://localhost:9200/search-metrics-${TODAY}/_search?pretty"
+# Query ubi_queries index
+curl "http://localhost:9200/ubi_queries/_search?pretty&size=5"
+
+# Query ubi_events index
+curl "http://localhost:9200/ubi_events/_search?pretty&size=5"
 
 # Query via Analytics API
 START=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)
 END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 curl "http://localhost:3001/analytics/top-searches?start=${START}&end=${END}"
+curl "http://localhost:3001/analytics/popular-documents?start=${START}&end=${END}"
+curl "http://localhost:3001/analytics/events-by-action?start=${START}&end=${END}"
 ```
 
 ## Development Workflow
@@ -290,79 +309,15 @@ npm run format
 
 ## Common Tasks
 
-### Clear All Data
+### Clear UBI Data
 
 ```bash
-# Clear Redis queue
+# Delete UBI indices (will be recreated by UBI plugin)
+curl -X DELETE "http://localhost:9200/ubi_queries"
+curl -X DELETE "http://localhost:9200/ubi_events"
+
+# Clear Redis rate limiter data
 docker exec -it $(docker ps -q -f name=redis) redis-cli FLUSHALL
-
-# Delete OpenSearch indices
-curl -X DELETE "http://localhost:9200/search-metrics-*"
-```
-
-### View OpenSearch Dashboards
-
-1. Open http://localhost:5601
-2. Go to "Dev Tools" → "Console"
-3. Run queries:
-
-```json
-GET /search-metrics-*/_search
-{
-  "size": 10,
-  "sort": [
-    {
-      "timestamp": "desc"
-    }
-  ]
-}
-```
-
-### Generate Test Data
-
-Create `scripts/generate-test-data.js`:
-
-```javascript
-const { Queue } = require('bullmq');
-
-const queries = [
-  'kubernetes tutorial',
-  'docker compose',
-  'nestjs microservices',
-  'redis caching',
-  'opensearch aggregations',
-];
-
-async function generateTestData(count = 100) {
-  const queue = new Queue('search-metrics', {
-    connection: { host: 'localhost', port: 6379 },
-  });
-
-  for (let i = 0; i < count; i++) {
-    const query = queries[Math.floor(Math.random() * queries.length)];
-    const event = {
-      requestId: `test-${Date.now()}-${i}`,
-      query,
-      offset: 0,
-      executionTimeMs: Math.floor(Math.random() * 100) + 10,
-      totalResults: Math.floor(Math.random() * 10000),
-      hitsCount: 10,
-      hits: [],
-      timestamp: new Date().toISOString(),
-    };
-
-    await queue.add('search-metric', event);
-    console.log(`Published ${i + 1}/${count}`);
-    
-    // Small delay to avoid overwhelming the queue
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-
-  await queue.close();
-  console.log(`Generated ${count} test events`);
-}
-
-generateTestData(100).catch(console.error);
 ```
 
 ## Troubleshooting
@@ -450,10 +405,11 @@ npm run start:prod
 | `OPENSEARCH_HOST` | `http://localhost:9200` | OpenSearch endpoint |
 | `OPENSEARCH_USERNAME` | - | OpenSearch username |
 | `OPENSEARCH_PASSWORD` | - | OpenSearch password |
-| `QUEUE_NAME` | `search-metrics` | BullMQ queue name |
-| `METRICS_INDEX_PREFIX` | `search-metrics` | OpenSearch index prefix |
-| `METRICS_RETENTION_DAYS` | `30` | Data retention period |
+| `THROTTLE_GLOBAL_LIMIT` | `20` | Requests/min per anonymized IP |
+| `THROTTLE_BURST_LIMIT` | `3` | Requests/sec per anonymized IP |
+| `ALLOWED_CLIENT_NAMES` | - | Comma-separated whitelist |
 | `CORS_ALLOWED_ORIGIN` | `*` | CORS allowed origins |
+| `TRUST_PROXY` | `false` | Trust X-Forwarded-For headers |
 
 ## Next Steps
 

@@ -1,12 +1,19 @@
-# Stats Goblin - API Examples
+# Analytics Goblin - API Examples
 
-Complete examples for interacting with the Stats Goblin analytics API.
+Complete examples for interacting with the Analytics Goblin API.
 
 ## Base URL
 
 ```
 http://localhost:3001
 ```
+
+## GDPR Compliance
+
+- **No cookies**: This service does not set any cookies
+- **Client-side sessions**: Frontend manages session_id in localStorage
+- **IP anonymization**: IPs are anonymized before rate limiting
+- **No personal data**: No personal information stored on server
 
 ## Authentication
 
@@ -23,26 +30,16 @@ curl http://localhost:3001/health
 Response:
 ```json
 {
-  "status": "healthy",
-  "timestamp": "2025-11-14T10:30:00.000Z",
-  "services": {
+  "status": "ok",
+  "info": {
     "redis": {
-      "status": "up",
-      "details": {
-        "waiting": 0,
-        "active": 2,
-        "completed": 15234,
-        "failed": 3
-      }
+      "status": "up"
     },
     "opensearch": {
       "status": "up",
-      "details": {
-        "clusterName": "docker-cluster",
-        "clusterStatus": "green",
-        "numberOfNodes": 1,
-        "activeShards": 5
-      }
+      "ubiPluginInstalled": true,
+      "clusterName": "docker-cluster",
+      "clusterStatus": "green"
     }
   }
 }
@@ -58,9 +55,41 @@ curl http://localhost:3001/health/redis
 curl http://localhost:3001/health/opensearch
 ```
 
+## Session Management
+
+### Initialize Session
+
+Get a session ID for frontend tracking (GDPR-friendly, no cookies):
+
+```bash
+curl "http://localhost:3001/session/init?client_name=web&client_version=1.0.0"
+```
+
+Response:
+```json
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_id": "web@1.0.0@550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Important:** No `Set-Cookie` header. Frontend stores `session_id` in localStorage.
+
+**Frontend Integration:**
+```javascript
+const response = await fetch(
+  'http://localhost:3001/session/init?client_name=web&client_version=1.0.0'
+);
+const { session_id, client_id } = await response.json();
+
+// Store in localStorage (client-side only)
+localStorage.setItem('sessionId', session_id);
+localStorage.setItem('clientId', client_id);
+```
+
 ## Analytics Examples
 
-All analytics endpoints accept date ranges in ISO 8601 format.
+All analytics endpoints query UBI data and accept date ranges in ISO 8601 format.
 
 ### Example: Last 7 Days
 
@@ -84,45 +113,19 @@ Response:
   {
     "query": "kubernetes deployment",
     "count": 1523,
-    "avgExecutionTimeMs": 45,
-    "avgTotalResults": 12340
+    "uniqueUsers": 842
   },
   {
     "query": "docker compose tutorial",
     "count": 987,
-    "avgExecutionTimeMs": 38,
-    "avgTotalResults": 8920
-  }
-]
-```
-
-### Zero Result Queries
-
-Identify searches that returned no results (content gaps):
-
-```bash
-curl "http://localhost:3001/analytics/zero-results?start=2025-11-01T00:00:00Z&end=2025-11-14T23:59:59Z&limit=10"
-```
-
-Response:
-```json
-[
-  {
-    "query": "obscure framework v5",
-    "count": 23,
-    "lastOccurrence": "2025-11-14T08:15:32.000Z"
-  },
-  {
-    "query": "legacy api documentation",
-    "count": 18,
-    "lastOccurrence": "2025-11-13T15:42:10.000Z"
+    "uniqueUsers": 654
   }
 ]
 ```
 
 ### Popular Documents
 
-Find which documents appear most frequently in search results:
+Find which documents users click most frequently (from UBI events):
 
 ```bash
 curl "http://localhost:3001/analytics/popular-documents?start=2025-11-01T00:00:00Z&end=2025-11-14T23:59:59Z&limit=10"
@@ -133,56 +136,41 @@ Response:
 [
   {
     "documentId": "doc-12345",
-    "urlHost": "docs.example.com",
-    "urlPath": "/getting-started/quickstart",
-    "appearances": 4532,
-    "avgScore": 9.2
+    "clickCount": 4532,
+    "uniqueUsers": 2891
   },
   {
     "documentId": "doc-67890",
-    "urlHost": "docs.example.com",
-    "urlPath": "/guides/deployment",
-    "appearances": 3421,
-    "avgScore": 8.7
+    "clickCount": 3421,
+    "uniqueUsers": 2103
   }
 ]
 ```
 
-### Performance Trends
+### Events by Action
 
-Analyze search performance over time with different intervals:
+Analyze user behavior events by action type:
 
 ```bash
-# Hourly trends
-curl "http://localhost:3001/analytics/performance-trends?start=2025-11-14T00:00:00Z&end=2025-11-14T23:59:59Z&interval=1h"
-
-# Daily trends
-curl "http://localhost:3001/analytics/performance-trends?start=2025-11-01T00:00:00Z&end=2025-11-14T23:59:59Z&interval=1d"
+curl "http://localhost:3001/analytics/events-by-action?start=2025-11-01T00:00:00Z&end=2025-11-14T23:59:59Z"
 ```
 
-Response (hourly):
+Response:
 ```json
 [
   {
-    "interval": "2025-11-14T10:00:00.000Z",
-    "avgExecutionTimeMs": 42,
-    "totalSearches": 523,
-    "p50ExecutionTimeMs": 35,
-    "p95ExecutionTimeMs": 89,
-    "p99ExecutionTimeMs": 152
+    "action": "click",
+    "count": 45230
   },
   {
-    "interval": "2025-11-14T11:00:00.000Z",
-    "avgExecutionTimeMs": 48,
-    "totalSearches": 612,
-    "p50ExecutionTimeMs": 38,
-    "p95ExecutionTimeMs": 95,
-    "p99ExecutionTimeMs": 178
+    "action": "scroll",
+    "count": 12890
+  },
+  {
+    "action": "hover",
+    "count": 8340
   }
 ]
-```
-
-Valid intervals: `1m`, `5m`, `15m`, `30m`, `1h`, `6h`, `12h`, `1d`
 
 ### Search Statistics Summary
 
@@ -195,19 +183,23 @@ curl "http://localhost:3001/analytics/stats?start=2025-11-01T00:00:00Z&end=2025-
 Response:
 ```json
 {
-  "totalSearches": 125340,
+  "totalQueries": 125340,
   "uniqueQueries": 8234,
-  "avgExecutionTimeMs": 43,
-  "zeroResultRate": 0.087
+  "totalEvents": 67890,
+  "uniqueUsers": 4521,
+  "topActions": [
+    { "action": "click", "count": 45000 },
+    { "action": "scroll", "count": 12000 }
+  ]
 }
 ```
 
 ## Advanced Query Examples
 
-### Last 24 Hours Performance
+### Last 24 Hours Activity
 
 ```bash
-curl "http://localhost:3001/analytics/performance-trends?start=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)&end=$(date -u +%Y-%m-%dT%H:%M:%SZ)&interval=1h"
+curl "http://localhost:3001/analytics/stats?start=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)&end=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
 ### This Month's Top Searches
@@ -219,20 +211,10 @@ MONTH_END="2025-11-30T23:59:59Z"
 curl "http://localhost:3001/analytics/top-searches?start=${MONTH_START}&end=${MONTH_END}&limit=50"
 ```
 
-### Week-over-Week Comparison
+### Most Clicked Documents
 
 ```bash
-# This week
-THIS_WEEK_START=$(date -u -d 'last monday' +%Y-%m-%dT00:00:00Z)
-THIS_WEEK_END=$(date -u +%Y-%m-%dT23:59:59Z)
-
-curl "http://localhost:3001/analytics/stats?start=${THIS_WEEK_START}&end=${THIS_WEEK_END}"
-
-# Last week
-LAST_WEEK_START=$(date -u -d 'last monday - 7 days' +%Y-%m-%dT00:00:00Z)
-LAST_WEEK_END=$(date -u -d 'last sunday' +%Y-%m-%dT23:59:59Z)
-
-curl "http://localhost:3001/analytics/stats?start=${LAST_WEEK_START}&end=${LAST_WEEK_END}"
+curl "http://localhost:3001/analytics/popular-documents?start=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)&end=$(date -u +%Y-%m-%dT%H:%M:%SZ)&limit=20"
 ```
 
 ## Integration Examples
@@ -242,18 +224,22 @@ curl "http://localhost:3001/analytics/stats?start=${LAST_WEEK_START}&end=${LAST_
 ```bash
 #!/bin/bash
 
-# Daily report script
+# Daily UBI analytics report
 YESTERDAY=$(date -u -d '1 day ago' +%Y-%m-%dT00:00:00Z)
 TODAY=$(date -u +%Y-%m-%dT00:00:00Z)
 
-echo "=== Daily Search Report ==="
+echo "=== Daily UBI Analytics Report ==="
 echo ""
 echo "Top 10 Searches:"
 curl -s "http://localhost:3001/analytics/top-searches?start=${YESTERDAY}&end=${TODAY}&limit=10" | jq '.'
 
 echo ""
-echo "Zero Result Queries:"
-curl -s "http://localhost:3001/analytics/zero-results?start=${YESTERDAY}&end=${TODAY}&limit=5" | jq '.'
+echo "Popular Documents (by clicks):"
+curl -s "http://localhost:3001/analytics/popular-documents?start=${YESTERDAY}&end=${TODAY}&limit=5" | jq '.'
+
+echo ""
+echo "Events by Action:"
+curl -s "http://localhost:3001/analytics/events-by-action?start=${YESTERDAY}&end=${TODAY}" | jq '.'
 
 echo ""
 echo "Overall Stats:"
@@ -371,7 +357,24 @@ If OpenSearch is down, analytics endpoints will fail, but the health endpoint wi
 
 ## Rate Limiting
 
-Currently no rate limiting is implemented. See `docs/future-improvements.md` for planned API authentication and rate limiting features.
+GDPR-compliant rate limiting with IP anonymization:
+- Global: 20 requests/minute per anonymized IP
+- Burst: 3 requests/second per anonymized IP
+
+Rate limit headers:
+```
+X-RateLimit-Limit: 20
+X-RateLimit-Remaining: 15
+X-RateLimit-Reset: 1234567890
+```
+
+429 response when exceeded:
+```json
+{
+  "statusCode": 429,
+  "message": "ThrottlerException: Too Many Requests"
+}
+```
 
 ## CORS Configuration
 
