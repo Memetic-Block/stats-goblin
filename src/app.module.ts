@@ -7,7 +7,6 @@ import { AppController } from './app.controller'
 import { AppService } from './app.service'
 import { SessionModule } from './session/session.module'
 import { AnalyticsModule } from './analytics/analytics.module'
-import { HealthModule } from './health/health.module'
 import { OpenSearchModule } from './opensearch/opensearch.module'
 import { ThrottlerBehindProxyGuard } from './common/guards/throttler-proxy.guard'
 import redisConfig from './config/redis.config'
@@ -44,7 +43,6 @@ import appConfig from './config/app.config'
     }),
     SessionModule,
     AnalyticsModule,
-    HealthModule,
     OpenSearchModule
   ],
   controllers: [AppController],

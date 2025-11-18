@@ -19,41 +19,20 @@ http://localhost:3001
 
 Currently no authentication required. See `docs/future-improvements.md` for planned security enhancements.
 
-## Health Check Examples
+## Health Check
 
-### Overall System Health
+### Simple Health Check
 
 ```bash
 curl http://localhost:3001/health
 ```
 
 Response:
-```json
-{
-  "status": "ok",
-  "info": {
-    "redis": {
-      "status": "up"
-    },
-    "opensearch": {
-      "status": "up",
-      "ubiPluginInstalled": true,
-      "clusterName": "docker-cluster",
-      "clusterStatus": "green"
-    }
-  }
-}
+```
+OK
 ```
 
-### Check Individual Services
-
-```bash
-# Redis only
-curl http://localhost:3001/health/redis
-
-# OpenSearch only
-curl http://localhost:3001/health/opensearch
-```
+This endpoint simply returns "OK" if the service is reachable. It does not check external dependencies.
 
 ## Session Management
 
@@ -87,284 +66,178 @@ localStorage.setItem('sessionId', session_id);
 localStorage.setItem('clientId', client_id);
 ```
 
-## Analytics Examples
+## Query Submission (UBI 1.3.0)
 
-All analytics endpoints query UBI data and accept date ranges in ISO 8601 format.
+Analytics Goblin accepts client-side query submissions following the UBI (User Behavior Insights) 1.3.0 schema. This is designed for applications that perform searches on third-party APIs (e.g., GraphQL endpoints) where the backend doesn't control the search API.
 
-### Example: Last 7 Days
+### Submit Single Query
 
-```bash
-START_DATE=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
-END_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-# Top searches from last 7 days
-curl "http://localhost:3001/analytics/top-searches?start=${START_DATE}&end=${END_DATE}&limit=20"
-```
-
-### Top Searches
+Fire-and-forget endpoint that returns `200 OK` immediately. Processing happens asynchronously.
 
 ```bash
-curl "http://localhost:3001/analytics/top-searches?start=2025-11-01T00:00:00Z&end=2025-11-14T23:59:59Z&limit=10"
-```
-
-Response:
-```json
-[
-  {
-    "query": "kubernetes deployment",
-    "count": 1523,
-    "uniqueUsers": 842
-  },
-  {
-    "query": "docker compose tutorial",
-    "count": 987,
-    "uniqueUsers": 654
-  }
-]
-```
-
-### Popular Documents
-
-Find which documents users click most frequently (from UBI events):
-
-```bash
-curl "http://localhost:3001/analytics/popular-documents?start=2025-11-01T00:00:00Z&end=2025-11-14T23:59:59Z&limit=10"
-```
-
-Response:
-```json
-[
-  {
-    "documentId": "doc-12345",
-    "clickCount": 4532,
-    "uniqueUsers": 2891
-  },
-  {
-    "documentId": "doc-67890",
-    "clickCount": 3421,
-    "uniqueUsers": 2103
-  }
-]
-```
-
-### Events by Action
-
-Analyze user behavior events by action type:
-
-```bash
-curl "http://localhost:3001/analytics/events-by-action?start=2025-11-01T00:00:00Z&end=2025-11-14T23:59:59Z"
-```
-
-Response:
-```json
-[
-  {
-    "action": "click",
-    "count": 45230
-  },
-  {
-    "action": "scroll",
-    "count": 12890
-  },
-  {
-    "action": "hover",
-    "count": 8340
-  }
-]
-
-### Search Statistics Summary
-
-Get aggregated stats for a time period:
-
-```bash
-curl "http://localhost:3001/analytics/stats?start=2025-11-01T00:00:00Z&end=2025-11-14T23:59:59Z"
-```
-
-Response:
-```json
-{
-  "totalQueries": 125340,
-  "uniqueQueries": 8234,
-  "totalEvents": 67890,
-  "uniqueUsers": 4521,
-  "topActions": [
-    { "action": "click", "count": 45000 },
-    { "action": "scroll", "count": 12000 }
-  ]
-}
-```
-
-## Advanced Query Examples
-
-### Last 24 Hours Activity
-
-```bash
-curl "http://localhost:3001/analytics/stats?start=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)&end=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-```
-
-### This Month's Top Searches
-
-```bash
-MONTH_START="2025-11-01T00:00:00Z"
-MONTH_END="2025-11-30T23:59:59Z"
-
-curl "http://localhost:3001/analytics/top-searches?start=${MONTH_START}&end=${MONTH_END}&limit=50"
-```
-
-### Most Clicked Documents
-
-```bash
-curl "http://localhost:3001/analytics/popular-documents?start=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)&end=$(date -u +%Y-%m-%dT%H:%M:%SZ)&limit=20"
-```
-
-## Integration Examples
-
-### Shell Script
-
-```bash
-#!/bin/bash
-
-# Daily UBI analytics report
-YESTERDAY=$(date -u -d '1 day ago' +%Y-%m-%dT00:00:00Z)
-TODAY=$(date -u +%Y-%m-%dT00:00:00Z)
-
-echo "=== Daily UBI Analytics Report ==="
-echo ""
-echo "Top 10 Searches:"
-curl -s "http://localhost:3001/analytics/top-searches?start=${YESTERDAY}&end=${TODAY}&limit=10" | jq '.'
-
-echo ""
-echo "Popular Documents (by clicks):"
-curl -s "http://localhost:3001/analytics/popular-documents?start=${YESTERDAY}&end=${TODAY}&limit=5" | jq '.'
-
-echo ""
-echo "Events by Action:"
-curl -s "http://localhost:3001/analytics/events-by-action?start=${YESTERDAY}&end=${TODAY}" | jq '.'
-
-echo ""
-echo "Overall Stats:"
-curl -s "http://localhost:3001/analytics/stats?start=${YESTERDAY}&end=${TODAY}" | jq '.'
-```
-
-### Python Client
-
-```python
-import requests
-from datetime import datetime, timedelta
-
-BASE_URL = "http://localhost:3001"
-
-def get_top_searches(days=7, limit=10):
-    end = datetime.utcnow()
-    start = end - timedelta(days=days)
-    
-    params = {
-        'start': start.isoformat() + 'Z',
-        'end': end.isoformat() + 'Z',
-        'limit': limit
+curl -X POST http://localhost:3001/analytics/queries \
+  -H "Content-Type: application/json" \
+  -d '{
+    "application": "graphql-images",
+    "query_id": "550e8400-e29b-41d4-a716-446655440000",
+    "client_id": "web@1.0.0@123e4567-e89b-12d3-a456-426614174000",
+    "user_query": "kubernetes deployment guide",
+    "timestamp": "2025-11-17T10:30:00.000Z",
+    "query_response_id": "resp-123456",
+    "query_response_hit_ids": ["img-001", "img-002", "img-003"],
+    "query_attributes": {
+      "filters": ["type:tutorial", "difficulty:beginner"],
+      "sort": "relevance"
     }
-    
-    response = requests.get(f"{BASE_URL}/analytics/top-searches", params=params)
-    return response.json()
-
-def check_health():
-    response = requests.get(f"{BASE_URL}/health")
-    health = response.json()
-    return health['status'] == 'healthy'
-
-# Usage
-if check_health():
-    top_searches = get_top_searches(days=7, limit=20)
-    for search in top_searches:
-        print(f"{search['query']}: {search['count']} searches")
+  }'
 ```
 
-### JavaScript/Node.js Client
+Response:
+```
+200 OK
+```
+
+**UBI 1.3.0 Schema Fields:**
+
+- `application` (required): Application identifier. Allowed values: `graphql-images`, `graphql-video`, `graphql-audio`
+- `query_id` (required): Unique identifier for the query (UUID recommended)
+- `client_id` (required): Client identifier from session init
+- `user_query` (required): The search query as entered by the user
+- `timestamp` (optional): UTC timestamp in ISO 8601 format with `Z` suffix. Auto-generated if not provided
+- `query_response_id` (optional): Identifier for the search response
+- `query_response_hit_ids` (optional): Array of document IDs returned by the search, in order
+- `query_attributes` (optional): Additional query metadata (filters, sort, etc.)
+- `object_id_field` (optional): Field name containing object IDs
+
+### Submit Batch Queries
+
+Submit multiple queries at once for better efficiency:
+
+```bash
+curl -X POST http://localhost:3001/analytics/queries/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queries": [
+      {
+        "application": "graphql-images",
+        "query_id": "query-001",
+        "client_id": "web@1.0.0@123e4567-e89b-12d3-a456-426614174000",
+        "user_query": "docker compose examples",
+        "timestamp": "2025-11-17T10:30:00.000Z",
+        "query_response_hit_ids": ["img-101", "img-102"]
+      },
+      {
+        "application": "graphql-video",
+        "query_id": "query-002",
+        "client_id": "web@1.0.0@123e4567-e89b-12d3-a456-426614174000",
+        "user_query": "nestjs tutorial",
+        "timestamp": "2025-11-17T10:31:00.000Z",
+        "query_response_hit_ids": ["vid-201", "vid-202", "vid-203"]
+      }
+    ]
+  }'
+```
+
+Response:
+```
+200 OK
+```
+
+**Batch Limits:**
+- Maximum 50 queries per batch
+- Maximum 5000 characters per `user_query`
+- Maximum 100 items in `query_response_hit_ids` array
+
+### Example: GraphQL Image Search
 
 ```javascript
-const axios = require('axios');
-
-const BASE_URL = 'http://localhost:3001';
-
-async function getSearchStats(startDate, endDate) {
-  const { data } = await axios.get(`${BASE_URL}/analytics/stats`, {
-    params: {
-      start: startDate.toISOString(),
-      end: endDate.toISOString()
-    }
-  });
-  return data;
-}
-
-async function getPerformanceTrends(hours = 24) {
-  const end = new Date();
-  const start = new Date(end.getTime() - hours * 60 * 60 * 1000);
+// After performing a GraphQL search on a third-party API
+async function submitSearchAnalytics(query, results) {
+  const sessionId = localStorage.getItem('sessionId');
+  const clientId = localStorage.getItem('clientId');
   
-  const { data } = await axios.get(`${BASE_URL}/analytics/performance-trends`, {
-    params: {
-      start: start.toISOString(),
-      end: end.toISOString(),
-      interval: '1h'
+  const queryData = {
+    application: 'graphql-images',
+    query_id: crypto.randomUUID(),
+    client_id: clientId,
+    user_query: query,
+    timestamp: new Date().toISOString(),
+    query_response_hit_ids: results.map(r => r.id),
+    query_attributes: {
+      filters: results.filters || [],
+      result_count: results.length
     }
-  });
-  return data;
-}
-
-// Usage
-(async () => {
-  const stats = await getSearchStats(
-    new Date('2025-11-01'),
-    new Date('2025-11-14')
-  );
-  console.log('Search Stats:', stats);
+  };
   
-  const trends = await getPerformanceTrends(24);
-  console.log('24h Performance:', trends);
-})();
+  // Fire-and-forget - don't wait for response
+  fetch('http://localhost:3001/analytics/queries', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(queryData)
+  }).catch(() => {
+    // Silently fail - analytics shouldn't break user experience
+  });
+}
 ```
 
-## Error Handling
+### Example: Video Search with Batch
 
-### Invalid Date Range
-
-```bash
-curl "http://localhost:3001/analytics/stats?start=invalid&end=also-invalid"
-```
-
-The API will return appropriate HTTP error codes:
-- `400 Bad Request` - Invalid date format or missing required parameters
-- `500 Internal Server Error` - OpenSearch or system errors
-
-### Service Degradation
-
-If OpenSearch is down, analytics endpoints will fail, but the health endpoint will still respond:
-
-```json
-{
-  "status": "degraded",
-  "timestamp": "2025-11-14T10:30:00.000Z",
-  "services": {
-    "redis": {
-      "status": "up"
-    },
-    "opensearch": {
-      "status": "down",
-      "message": "Connection refused"
+```javascript
+// Accumulate queries and submit in batches
+class AnalyticsQueue {
+  constructor() {
+    this.queue = [];
+    this.batchSize = 10;
+  }
+  
+  add(query, results) {
+    const clientId = localStorage.getItem('clientId');
+    
+    this.queue.push({
+      application: 'graphql-video',
+      query_id: crypto.randomUUID(),
+      client_id: clientId,
+      user_query: query,
+      timestamp: new Date().toISOString(),
+      query_response_hit_ids: results.slice(0, 100).map(r => r.id)
+    });
+    
+    if (this.queue.length >= this.batchSize) {
+      this.flush();
     }
   }
+  
+  flush() {
+    if (this.queue.length === 0) return;
+    
+    fetch('http://localhost:3001/analytics/queries/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queries: this.queue })
+    }).catch(() => {});
+    
+    this.queue = [];
+  }
 }
+
+const analytics = new AnalyticsQueue();
+// Flush on page unload
+window.addEventListener('beforeunload', () => analytics.flush());
 ```
 
 ## Rate Limiting
 
 GDPR-compliant rate limiting with IP anonymization:
-- Global: 20 requests/minute per anonymized IP
+
+**Query Submission:**
+- Individual queries: 100 requests/minute per anonymized IP
+- Batch queries: 10 requests/minute per anonymized IP
 - Burst: 3 requests/second per anonymized IP
 
 Rate limit headers:
 ```
-X-RateLimit-Limit: 20
-X-RateLimit-Remaining: 15
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 95
 X-RateLimit-Reset: 1234567890
 ```
 
@@ -375,6 +248,16 @@ X-RateLimit-Reset: 1234567890
   "message": "ThrottlerException: Too Many Requests"
 }
 ```
+
+## Configuration
+
+### Environment Variables
+
+- `ALLOWED_APPLICATIONS`: Comma-separated list of allowed application names (default: `graphql-images,graphql-video,graphql-audio`)
+- `MAX_QUERY_LENGTH`: Maximum length of `user_query` field (default: `5000`)
+- `MAX_BATCH_SIZE`: Maximum queries per batch (default: `50`)
+- `MAX_QUERY_RESPONSE_HITS`: Maximum items in `query_response_hit_ids` (default: `100`)
+- `BULK_CHUNK_SIZE`: OpenSearch bulk indexing chunk size (default: `20`)
 
 ## CORS Configuration
 

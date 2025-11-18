@@ -1,20 +1,21 @@
 # Frontend Implementation Guide
 
-This guide provides step-by-step instructions for integrating Analytics Goblin into your frontend web application to track user search behavior using the OpenSearch UBI (User Behavior Insights) specification.
+This guide provides step-by-step instructions for integrating Analytics Goblin into your frontend web application to track user search behavior using the OpenSearch UBI (User Behavior Insights) 1.3.0 specification.
 
 ## Overview
 
 Analytics Goblin is a GDPR-compliant analytics service that:
 - Generates session IDs for client-side storage (no cookies)
-- Tracks search queries and user interactions via OpenSearch UBI
+- Accepts client-side query submissions for third-party GraphQL searches
 - Anonymizes IP addresses for privacy compliance
-- Provides analytics APIs for aggregated insights
+- Provides fire-and-forget telemetry endpoints
 
 **Key Privacy Features:**
 - ✅ No server-side sessions
 - ✅ No cookies (localStorage only)
 - ✅ IP anonymization (GDPR-compliant)
 - ✅ Client controls session lifecycle
+- ✅ Fire-and-forget submissions (no data returned to client)
 
 ---
 
@@ -22,8 +23,8 @@ Analytics Goblin is a GDPR-compliant analytics service that:
 
 1. [Prerequisites](#prerequisites)
 2. [Session Management](#session-management)
-3. [Tracking Search Queries](#tracking-search-queries)
-4. [Tracking User Events](#tracking-user-events)
+3. [Tracking Client-Side Searches](#tracking-client-side-searches)
+4. [Batch Submissions](#batch-submissions)
 5. [Complete Integration Example](#complete-integration-example)
 6. [TypeScript Types](#typescript-types)
 7. [Rate Limiting](#rate-limiting)
@@ -40,9 +41,9 @@ Set the Analytics Goblin API base URL in your frontend environment:
 
 ```bash
 # .env.local (Next.js, Vite, etc.)
-VITE_ANALYTICS_API_URL=http://localhost:3000
+VITE_ANALYTICS_API_URL=http://localhost:3001
 # or
-NEXT_PUBLIC_ANALYTICS_API_URL=http://localhost:3000
+NEXT_PUBLIC_ANALYTICS_API_URL=http://localhost:3001
 ```
 
 ### Required Information
@@ -50,6 +51,7 @@ NEXT_PUBLIC_ANALYTICS_API_URL=http://localhost:3000
 Before integrating, you need:
 - **Client Name**: Your application identifier (alphanumeric + hyphens only)
 - **Client Version**: Your app version in semver format (e.g., `1.0.0`)
+- **Application Type**: One of `graphql-images`, `graphql-video`, `graphql-audio`
 
 Your client name must be whitelisted in the Analytics Goblin service via the `ALLOWED_CLIENT_NAMES` environment variable.
 
@@ -67,18 +69,20 @@ const ANALYTICS_API_URL = import.meta.env.VITE_ANALYTICS_API_URL;
 const CLIENT_NAME = 'my-search-app';
 const CLIENT_VERSION = '1.0.0';
 const SESSION_STORAGE_KEY = 'analytics_session_id';
+const CLIENT_ID_STORAGE_KEY = 'analytics_client_id';
 
 interface SessionInitResponse {
   session_id: string;
   client_id: string;
-  message: string;
 }
 
-async function initializeSession(): Promise<string> {
+async function initializeSession(): Promise<{ sessionId: string; clientId: string }> {
   // Check if session already exists
   const existingSessionId = localStorage.getItem(SESSION_STORAGE_KEY);
-  if (existingSessionId) {
-    return existingSessionId;
+  const existingClientId = localStorage.getItem(CLIENT_ID_STORAGE_KEY);
+  
+  if (existingSessionId && existingClientId) {
+    return { sessionId: existingSessionId, clientId: existingClientId };
   }
 
   // Request new session from Analytics Goblin
@@ -99,33 +103,37 @@ async function initializeSession(): Promise<string> {
 
     const data: SessionInitResponse = await response.json();
     
-    // Store session ID in localStorage
+    // Store session ID and client ID in localStorage
     localStorage.setItem(SESSION_STORAGE_KEY, data.session_id);
+    localStorage.setItem(CLIENT_ID_STORAGE_KEY, data.client_id);
     
-    return data.session_id;
+    return { sessionId: data.session_id, clientId: data.client_id };
   } catch (error) {
     console.error('Failed to initialize analytics session:', error);
-    // Generate fallback session ID (still track locally even if API fails)
+    // Generate fallback IDs (still track locally even if API fails)
     const fallbackSessionId = `fallback-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const fallbackClientId = `${CLIENT_NAME}@${CLIENT_VERSION}@${fallbackSessionId}`;
     localStorage.setItem(SESSION_STORAGE_KEY, fallbackSessionId);
-    return fallbackSessionId;
+    localStorage.setItem(CLIENT_ID_STORAGE_KEY, fallbackClientId);
+    return { sessionId: fallbackSessionId, clientId: fallbackClientId };
   }
 }
 
 // Initialize on app load
-let sessionId: string | null = null;
+let session: { sessionId: string; clientId: string } | null = null;
 
-export async function getSessionId(): Promise<string> {
-  if (!sessionId) {
-    sessionId = await initializeSession();
+export async function getSession(): Promise<{ sessionId: string; clientId: string }> {
+  if (!session) {
+    session = await initializeSession();
   }
-  return sessionId;
+  return session;
 }
 
 // Optional: Clear session (e.g., on logout or user request)
 export function clearSession(): void {
   localStorage.removeItem(SESSION_STORAGE_KEY);
-  sessionId = null;
+  localStorage.removeItem(CLIENT_ID_STORAGE_KEY);
+  session = null;
 }
 ```
 
@@ -136,12 +144,12 @@ Initialize the session as early as possible in your app lifecycle:
 ```typescript
 // App.tsx (React)
 import { useEffect } from 'react';
-import { getSessionId } from './lib/analytics';
+import { getSession } from './lib/analytics';
 
 function App() {
   useEffect(() => {
     // Initialize session on mount
-    getSessionId().catch(console.error);
+    getSession().catch(console.error);
   }, []);
 
   return <YourApp />;
@@ -150,54 +158,248 @@ function App() {
 
 ```typescript
 // main.ts (Vue)
-import { getSessionId } from './lib/analytics';
+import { getSession } from './lib/analytics';
 
 // Initialize before mounting
-getSessionId().then(() => {
+getSession().then(() => {
   app.mount('#app');
 });
 ```
 
 ---
 
-## Tracking Search Queries
+## Tracking Client-Side Searches
 
-### UBI Query Tracking
+### UBI 1.3.0 Query Submission
 
-When a user performs a search, send the query details to OpenSearch UBI via your search backend. The frontend constructs the `client_id` for tracking.
-
-**Important:** The actual UBI query logging happens in your **search backend** (not Analytics Goblin). Analytics Goblin provides the session ID and client_id format.
+For client-side searches (e.g., GraphQL queries to third-party APIs), submit the query and results to Analytics Goblin after the search completes.
 
 ```typescript
 // lib/analytics.ts
-export function buildClientId(sessionId: string): string {
-  return `${CLIENT_NAME}@${CLIENT_VERSION}@${sessionId}`;
+
+interface UbiQuery {
+  application: string;
+  query_id: string;
+  client_id: string;
+  user_query: string;
+  timestamp?: string;
+  query_response_id?: string;
+  query_response_hit_ids?: string[];
+  query_attributes?: Record<string, any>;
+  object_id_field?: string;
 }
 
-// Example: Search component
-async function performSearch(query: string) {
-  const sessionId = await getSessionId();
-  const clientId = buildClientId(sessionId);
-
-  // Send search request to YOUR search backend
-  const response = await fetch('https://your-search-api.com/search', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      query: query,
-      client_id: clientId, // Include for UBI tracking
+export async function submitQuery(
+  query: string,
+  application: 'graphql-images' | 'graphql-video' | 'graphql-audio',
+  results: { id: string }[],
+  attributes?: Record<string, any>
+): Promise<void> {
+  try {
+    const { clientId } = await getSession();
+    
+    const queryData: UbiQuery = {
+      application,
+      query_id: crypto.randomUUID(),
+      client_id: clientId,
       user_query: query,
-      query_id: `query-${Date.now()}`, // Unique query identifier
-    }),
+      timestamp: new Date().toISOString(),
+      query_response_hit_ids: results.slice(0, 100).map(r => r.id),
+      ...(attributes && { query_attributes: attributes })
+    };
+
+    // Fire-and-forget - don't wait for response
+    fetch(`${ANALYTICS_API_URL}/analytics/queries`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(queryData),
+      keepalive: true // Ensure request completes even if page unloads
+    }).catch(() => {
+      // Silently fail - analytics shouldn't break user experience
+    });
+  } catch (error) {
+    // Log error but don't throw - analytics is non-critical
+    console.debug('Analytics submission failed:', error);
+  }
+}
+```
+
+### Example: Image Search Component
+
+```typescript
+// components/ImageSearch.tsx
+import { submitQuery } from '../lib/analytics';
+
+async function searchImages(query: string) {
+  // Perform GraphQL search on third-party API
+  const response = await fetch('https://third-party-api.com/graphql', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: `
+        query SearchImages($query: String!) {
+          images(query: $query, limit: 20) {
+            id
+            url
+            title
+          }
+        }
+      `,
+      variables: { query }
+    })
   });
 
-  const results = await response.json();
+  const { data } = await response.json();
+  const results = data.images;
+
+  // Submit to analytics (fire-and-forget)
+  submitQuery(
+    query,
+    'graphql-images',
+    results,
+    {
+      result_count: results.length,
+      has_results: results.length > 0
+    }
+  );
+
   return results;
 }
 ```
 
+### Example: Video Search with Filters
+
+```typescript
+// components/VideoSearch.tsx
+import { submitQuery } from '../lib/analytics';
+
+async function searchVideos(
+  query: string,
+  filters: { duration?: string; quality?: string }
+) {
+  // Perform search
+  const response = await fetchVideosFromAPI(query, filters);
+  const results = response.videos;
+
+  // Submit with filter metadata
+  submitQuery(
+    query,
+    'graphql-video',
+    results,
+    {
+      filters: Object.keys(filters),
+      filter_count: Object.keys(filters).length,
+      duration_filter: filters.duration,
+      quality_filter: filters.quality,
+      result_count: results.length
+    }
+  );
+
+  return results;
+}
+```
+
+---
+
+## Batch Submissions
+
+For better performance, accumulate queries and submit them in batches:
+
+```typescript
+// lib/analytics-queue.ts
+
+class AnalyticsQueue {
+  private queue: UbiQuery[] = [];
+  private readonly batchSize = 10;
+  private readonly flushInterval = 30000; // 30 seconds
+  private flushTimer: number | null = null;
+
+  constructor() {
+    // Flush on page unload
+    if (typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', () => this.flush());
+      window.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+          this.flush();
+        }
+      });
+    }
+  }
+
+  add(queryData: UbiQuery): void {
+    this.queue.push(queryData);
+
+    // Auto-flush when batch size reached
+    if (this.queue.length >= this.batchSize) {
+      this.flush();
+    } else {
+      // Schedule flush
+      this.scheduleFlush();
+    }
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) return;
+
+    this.flushTimer = window.setTimeout(() => {
+      this.flush();
+    }, this.flushInterval);
+  }
+
+  flush(): void {
+    if (this.queue.length === 0) return;
+
+    // Clear timer
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+
+    const queries = [...this.queue];
+    this.queue = [];
+
+    // Send batch
+    fetch(`${ANALYTICS_API_URL}/analytics/queries/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queries }),
+      keepalive: true
+    }).catch(() => {
+      // Silently fail
+    });
+  }
+}
+
+export const analyticsQueue = new AnalyticsQueue();
+
+// Modified submitQuery to use queue
+export async function submitQueryBatched(
+  query: string,
+  application: 'graphql-images' | 'graphql-video' | 'graphql-audio',
+  results: { id: string }[],
+  attributes?: Record<string, any>
+): Promise<void> {
+  try {
+    const { clientId } = await getSession();
+    
+    const queryData: UbiQuery = {
+      application,
+      query_id: crypto.randomUUID(),
+      client_id: clientId,
+      user_query: query,
+      timestamp: new Date().toISOString(),
+      query_response_hit_ids: results.slice(0, 100).map(r => r.id),
+      ...(attributes && { query_attributes: attributes })
+    };
+
+    analyticsQueue.add(queryData);
+  } catch (error) {
+    console.debug('Analytics queuing failed:', error);
+  }
+}
+```
+
+---
 ### UBI Query Format (Backend Reference)
 
 Your search backend should log queries to OpenSearch's `ubi_queries` index:
