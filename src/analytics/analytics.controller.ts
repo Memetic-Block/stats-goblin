@@ -18,19 +18,6 @@ export class AnalyticsController {
     )
   }
 
-  @Get('zero-results')
-  async getZeroResultQueries(
-    @Query('start') startDate: string,
-    @Query('end') endDate: string,
-    @Query('limit') limit?: string
-  ) {
-    return this.analyticsService.getZeroResultQueries(
-      startDate,
-      endDate,
-      limit ? parseInt(limit, 10) : 10
-    )
-  }
-
   @Get('popular-documents')
   async getPopularDocuments(
     @Query('start') startDate: string,
@@ -44,24 +31,24 @@ export class AnalyticsController {
     )
   }
 
-  @Get('performance-trends')
-  async getPerformanceTrends(
+  @Get('events-by-action')
+  async getEventsByAction(
     @Query('start') startDate: string,
     @Query('end') endDate: string,
-    @Query('interval') interval?: string
+    @Query('limit') limit?: string
   ) {
-    return this.analyticsService.getPerformanceTrends(
+    return this.analyticsService.getEventsByAction(
       startDate,
       endDate,
-      interval || '1h'
+      limit ? parseInt(limit, 10) : 10
     )
   }
 
   @Get('stats')
-  async getSearchStats(
+  async getStats(
     @Query('start') startDate: string,
     @Query('end') endDate: string
   ) {
-    return this.analyticsService.getSearchStats(startDate, endDate)
+    return this.analyticsService.getStats(startDate, endDate)
   }
 }

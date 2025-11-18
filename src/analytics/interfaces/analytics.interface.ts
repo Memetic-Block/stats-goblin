@@ -1,36 +1,51 @@
+// UBI Query tracking interfaces
+export interface UbiQuery {
+  query_id: string
+  client_id: string
+  user_query: string
+  timestamp: string
+  query_response_id?: string
+}
+
+export interface UbiEvent {
+  query_id: string
+  action_name: string
+  session_id?: string
+  client_id: string
+  timestamp: string
+  event_attributes?: {
+    object?: {
+      object_id: string
+      object_id_field?: string
+    }
+    position?: {
+      ordinal?: number
+    }
+  }
+}
+
+// Analytics response interfaces
 export interface TopSearchResult {
   query: string
   count: number
-  avgExecutionTimeMs: number
-  avgTotalResults: number
-}
-
-export interface ZeroResultQuery {
-  query: string
-  count: number
-  lastOccurrence: string
+  uniqueUsers: number
 }
 
 export interface PopularDocument {
   documentId: string
-  urlHost: string
-  urlPath: string
-  appearances: number
-  avgScore: number
+  clickCount: number
+  uniqueUsers: number
 }
 
-export interface PerformanceTrend {
-  interval: string
-  avgExecutionTimeMs: number
-  totalSearches: number
-  p50ExecutionTimeMs: number
-  p95ExecutionTimeMs: number
-  p99ExecutionTimeMs: number
+export interface EventsByAction {
+  action: string
+  count: number
 }
 
 export interface SearchStatsResponse {
-  totalSearches: number
+  totalQueries: number
   uniqueQueries: number
-  avgExecutionTimeMs: number
-  zeroResultRate: number
+  totalEvents: number
+  uniqueUsers: number
+  topActions: EventsByAction[]
 }

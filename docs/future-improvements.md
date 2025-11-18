@@ -1,221 +1,304 @@
 # Future Improvements
 
-This document tracks potential enhancements and features for future releases of the Stats Goblin metrics microservice.
+This document tracks potential enhancements and features for future releases of the Analytics Goblin service.
 
-## 1. Prometheus Integration
+## 1. Enhanced UBI Analytics
 
 **Priority:** High  
 **Effort:** Medium
 
-Add Prometheus metrics exporter to complement OpenSearch storage with real-time operational metrics.
+Leverage UBI data for deeper insights into user search behavior.
 
 ### Features
-- Expose `/metrics` endpoint in Prometheus format
-- Track key metrics:
-  - **Counters:** Total searches, total results returned, zero-result queries
-  - **Histograms:** Search execution time, result counts per query, queue processing time
-  - **Gauges:** Current queue depth, active workers, OpenSearch connection pool size
-- Add labels for dimensionality:
-  - Query patterns (categorized)
-  - URL hosts
-  - Time ranges
-  - User agent categories
+- **Query Refinement Patterns**: Track how users refine searches within a session
+- **Click-Through Rate (CTR)**: Measure document relevance based on click positions
+- **Dwell Time Tracking**: Analyze time spent on clicked documents (via frontend events)
+- **Abandoned Searches**: Identify queries where users don't click any results
+- **Session Flow Analysis**: Visualize common search paths and journeys
+- **Document Popularity Trends**: Track trending documents over time
+
+### Implementation
+- Extend analytics endpoints with session-based query aggregations
+- Add time-series analysis for trend detection
+- Create visualization endpoints for session flow diagrams
+- Implement funnel analysis for search-to-click conversion
+- Add cohort analysis comparing client versions
+
+### Benefits
+- Data-driven search relevance improvements
+- Identify content gaps from abandoned searches
+- Optimize search UI based on user behavior patterns
+
+---
+
+## 2. Prometheus Integration
+
+**Priority:** High  
+**Effort:** Medium
+
+Add Prometheus metrics exporter for real-time operational monitoring.
+
+### Metrics to Track
+- **Counters:** 
+  - Total sessions initialized
+  - Total UBI queries logged
+  - Total UBI events by action type (click, scroll, etc.)
+  - Rate limit hits (429 responses)
+  - IP anonymization operations
+- **Histograms:**
+  - API response times per endpoint
+  - UBI query aggregation latency
+  - Session initialization latency
+- **Gauges:**
+  - Active rate limiter entries in Redis
+  - OpenSearch connection pool size
+  - Current UBI index sizes
 
 ### Implementation
 - Install `@nestjs/prometheus` and `prom-client`
 - Create `PrometheusModule` with custom metrics
-- Update `MetricsConsumer` to record metrics on job processing
-- Update `AnalyticsService` to track API query metrics
+- Expose `/metrics` endpoint
+- Track GDPR compliance metrics (anonymization effectiveness)
+- Add Grafana dashboard templates
 
-### Benefits
-- Real-time dashboards via Grafana
-- Sub-second granularity for operational monitoring
-- Integration with existing monitoring infrastructure
-- Lower storage overhead for time-series data
-
----
-
-## 2. AlertManager Integration
-
-**Priority:** High  
-**Effort:** Medium
-
-Implement alerting for anomalies and operational issues.
-
-### Alert Rules
-- **Search Performance:**
-  - Search latency p95 > 500ms for 5 minutes
-  - Search latency p99 > 1000ms for 5 minutes
-- **Search Quality:**
-  - Zero-result rate > 20% over 10-minute window
-  - Sudden spike in zero-result queries (>200% increase)
-- **Operational:**
-  - Queue backlog > 1000 jobs for 5 minutes
-  - Failed job rate > 5% over 10 minutes
-  - OpenSearch cluster health != green for 2 minutes
-  - Redis connection failures
-
-### Notification Channels
-- Slack webhooks for team channels
-- PagerDuty for on-call escalation
-- Email for non-critical alerts
+### Alert Rules (with AlertManager)
+- Rate limit threshold breaches
+- OpenSearch health degradation
+- Spike in 429/500 errors
+- Redis connection failures
 
 ---
 
-## 3. Advanced Analytics Features
+## 3. Advanced Session Analytics
 
 **Priority:** Medium  
 **Effort:** Medium-High
 
-### Query Suggestions & Auto-Correction
-- Analyze zero-result queries to suggest corrections
-- Build query synonym dictionary from successful searches
-- Implement fuzzy matching for typo detection
+Since sessions are client-side, add opt-in session analysis features that respect privacy.
 
-### Search Session Analytics
-- Track search sessions using user agents and IP addresses
-- Analyze query refinement patterns
-- Measure time-to-success metrics
+### Features
+- **Session Duration Analysis**: How long users engage with search
+- **Multi-Device Session Linking**: Link sessions across devices (opt-in, no PII)
+- **Search Intent Classification**: Categorize queries by intent (navigational, informational, transactional)
+- **Cohort Analysis**: Compare behavior across client versions and time periods
+- **Query Auto-Correction Suggestions**: Analyze patterns to suggest corrections
 
-### A/B Testing Support
-- Add metadata fields for experiment tracking
-- Compare search quality across different configurations
-- Statistical significance testing for ranking changes
+### Privacy Considerations
+- All session analytics remain aggregated and anonymized
+- No PII linkage even with multi-device tracking
+- Users can clear localStorage anytime to reset session
+- Data export API for GDPR compliance (user requests their data)
+- Configurable retention periods per data type
 
----
-
-## 4. Machine Learning Insights
-
-**Priority:** Low  
-**Effort:** High
-
-### Anomaly Detection
-- Train models to detect unusual search patterns
-- Flag potential bot traffic or scraping attempts
-- Identify emerging topics or trending searches
-
-### Query Intent Classification
-- Categorize queries by intent (navigational, informational, transactional)
-- Track intent distribution over time
-- Optimize search experience per intent type
-
-### Personalization Analytics
-- Track user-specific search behavior (with privacy controls)
-- Measure personalization effectiveness
-- A/B test personalization strategies
+### Implementation
+- Add optional device fingerprinting (hash-based, no storage)
+- Implement query clustering for intent classification
+- Create cohort definition and comparison APIs
+- Build privacy-preserving session linking (hash-based)
 
 ---
 
-## 5. Performance Optimizations
+## 4. API Authentication & Enhanced Rate Limiting
+
+**Priority:** Medium  
+**Effort:** Medium
+
+### JWT-Based Authentication
+- Optional API key system for analytics endpoints
+- Role-based access control (RBAC) for different client types
+- Separate public (session init) vs. protected (analytics) endpoints
+
+### Enhanced Rate Limiting
+- **Per-Client Rate Limits**: Configurable limits per client_name
+- **Trusted Client Exemptions**: Whitelist for monitoring/admin tools
+- **Burst Allowances**: Higher short-term limits for trusted clients
+- **Geographic Rate Limiting**: Different limits by region (GDPR-compliant)
+
+### Implementation
+- Add `@nestjs/jwt` for token management
+- Create authentication guard for analytics endpoints
+- Extend ThrottlerModule with client-based tiers
+- Add admin endpoints for API key management
+- Implement rate limit bypass header for internal services
+
+---
+
+## 5. Data Retention & ILM Policies
+
+**Priority:** Medium  
+**Effort:** Low-Medium
+
+### OpenSearch Index Lifecycle Management
+Configure ILM policies for UBI indices to manage costs and compliance:
+
+- **Hot tier**: Last 7 days (high-performance SSDs, fast queries)
+- **Warm tier**: 8-30 days (standard storage, slower queries acceptable)
+- **Cold tier**: 31-90 days (compressed, searchable snapshots)
+- **Delete**: >90 days (configurable via environment variables)
+
+### GDPR-Compliant Deletion
+- Automated deletion of old UBI data per retention policy
+- Manual deletion API for "right to be forgotten" requests
+- Audit logging of all deletion operations
+
+### Implementation
+- Create ILM policy templates for `ubi_queries` and `ubi_events`
+- Apply policies during index initialization
+- Add configuration via `UBI_RETENTION_DAYS` environment variable
+- Document retention compliance in README
+- Add health check for ILM policy status
+
+---
+
+## 6. GDPR & Privacy Enhancements
+
+**Priority:** Medium  
+**Effort:** Medium
+
+### Enhanced Anonymization
+- **Geographic Precision Control**: Configurable IP anonymization levels (city, region, country)
+- **Query Sanitization**: Detect and redact PII in query strings (emails, phone numbers)
+- **User-Agent Normalization**: Hash user agents to prevent fingerprinting
+
+### Data Subject Rights
+- **Right to Access**: API endpoint for users to retrieve their session data
+- **Right to Deletion**: Delete all data associated with a session_id
+- **Right to Portability**: Export user data in JSON format
+- **Consent Management**: Track user consent preferences per session
+
+### Compliance Reporting
+- Generate GDPR compliance reports (data types, retention, anonymization)
+- Audit log for all data access and deletion requests
+- Privacy impact assessment documentation
+
+### Implementation
+- Add PII detection library (e.g., CommonRegex)
+- Create `PrivacyService` for data subject rights APIs
+- Implement consent tracking in session metadata
+- Add compliance reporting endpoints for admins
+
+---
+
+## 7. Performance Optimizations
 
 **Priority:** Medium  
 **Effort:** Low-Medium
 
 ### Pre-Aggregation
-- Scheduled jobs to compute hourly/daily rollups
-- Store common analytics queries as materialized views
+- Scheduled jobs to compute hourly/daily UBI rollups
+- Store common analytics queries as materialized views in OpenSearch
 - Reduce query latency for dashboard APIs from seconds to milliseconds
 
 ### Caching Layer
-- Redis cache for frequently accessed analytics
-- Cache invalidation on new data arrival
-- Configurable TTL per endpoint
+- Redis cache for frequently accessed analytics (top queries, popular documents)
+- Cache invalidation on new UBI data arrival
+- Configurable TTL per endpoint type
+- Cache warming during off-peak hours
 
 ### Query Optimization
-- Add OpenSearch query hints for better performance
-- Optimize aggregation bucket sizes
+- Add OpenSearch query hints for better aggregation performance
+- Optimize bucket sizes for time-based aggregations
 - Implement query result pagination for large datasets
+- Use composite aggregations for deep pagination
+
+### Implementation
+- Add cron jobs for pre-aggregation (e.g., via `@nestjs/schedule`)
+- Extend RedisModule for analytics caching (separate from rate limiter)
+- Add cache hit/miss metrics to Prometheus
+- Benchmark and document performance improvements
 
 ---
 
-## 6. Data Retention & Archival
-
-**Priority:** Medium  
-**Effort:** Medium
-
-### Index Lifecycle Management (ILM)
-- Hot tier: Last 7 days (high-performance SSDs)
-- Warm tier: 8-30 days (standard storage)
-- Cold tier: 31-90 days (object storage)
-- Delete: >90 days
-
-### Data Archival
-- Export aggregated metrics to S3/Azure Blob for long-term storage
-- Compress and archive raw events older than retention period
-- Support restore from archive for historical analysis
-
----
-
-## 7. Enhanced Security & Compliance
-
-**Priority:** Medium  
-**Effort:** Medium
-
-### PII Detection & Scrubbing
-- Detect and redact email addresses, phone numbers in queries
-- Hash IP addresses for privacy compliance
-- GDPR-compliant data deletion APIs
-
-### API Authentication & Authorization
-- Add JWT-based authentication
-- Role-based access control (RBAC) for analytics endpoints
-- Rate limiting per API key
-
-### Audit Logging
-- Log all API access with user context
-- Track data exports and sensitive operations
-- Compliance reporting endpoints
-
----
-
-## 8. Multi-Tenancy Support
-
-**Priority:** Low  
-**Effort:** High
-
-- Support multiple search indices from different applications
-- Tenant isolation at data and query level
-- Per-tenant analytics and dashboards
-- Cross-tenant aggregate analytics (optional)
-
----
-
-## 9. Real-Time Analytics
+## 8. Real-Time Analytics Dashboard
 
 **Priority:** Low  
 **Effort:** High
 
 ### WebSocket Streaming
-- Live search metrics dashboard
-- Real-time zero-result query feed
-- Streaming query trends
+- Live UBI events feed for real-time monitoring
+- Streaming query trends (top queries updating every few seconds)
+- Real-time click heatmaps for search results
+- Session activity visualization
 
 ### Event-Driven Architecture
-- Publish metrics to Kafka/SNS for downstream consumers
-- Support multiple event subscribers
-- Enable real-time ML model scoring
+- Publish UBI events to message queue (Kafka/RabbitMQ) for downstream consumers
+- Support multiple event subscribers (ML pipelines, real-time dashboards)
+- Enable real-time ML model scoring for query classification
+
+### Implementation
+- Add WebSocket gateway with `@nestjs/websockets`
+- Create event streaming endpoints with Server-Sent Events (SSE)
+- Implement backpressure handling for high-volume streams
+- Add authentication for WebSocket connections
+
+### Use Cases
+- Operations team monitoring search health
+- Content teams seeing trending searches in real-time
+- ML teams testing models on live data
 
 ---
 
-## 10. Observability Enhancements
+## 9. Observability Enhancements
 
 **Priority:** Medium  
-**Effort**: Low-Medium
+**Effort:** Low-Medium
 
 ### Distributed Tracing
-- OpenTelemetry integration
-- Trace requests from search API through metrics pipeline
-- Identify bottlenecks across microservices
+- OpenTelemetry integration for end-to-end request tracing
+- Trace requests from frontend → API → OpenSearch
+- Identify bottlenecks across the stack
+- Correlate UBI events with API traces
 
 ### Structured Logging
 - Winston or Pino with JSON formatting
-- Correlation IDs across all log entries
-- Integration with log aggregation (ELK, Splunk, Datadog)
+- Correlation IDs across all log entries (trace context)
+- Log sampling for high-traffic endpoints
+- Integration with log aggregation (CloudWatch, Datadog, Grafana Loki)
 
 ### Custom Dashboards
-- Pre-built Grafana dashboards for common use cases
-- OpenSearch Dashboards visualizations
+- Pre-built Grafana dashboards for:
+  - UBI query volume and trends
+  - Session initialization rates
+  - Rate limiting effectiveness
+  - OpenSearch cluster health
+- OpenSearch Dashboards visualizations for UBI data
 - Embedded analytics widgets for admin panels
+
+### Implementation
+- Add `@opentelemetry/api` and `@opentelemetry/sdk-node`
+- Configure trace exporters (Jaeger, Zipkin, or cloud providers)
+- Add correlation ID middleware
+- Create dashboard JSON templates in `dashboards/` directory
+
+---
+
+## 10. Machine Learning Insights
+
+**Priority:** Low  
+**Effort:** High
+
+### Anomaly Detection
+- Train models to detect unusual search patterns (bot traffic, attacks)
+- Flag potential scraping attempts based on behavior
+- Identify emerging topics or trending searches
+- Alert on sudden changes in click-through rates
+
+### Query Intent Classification
+- Categorize queries by intent using NLP (navigational, informational, transactional)
+- Track intent distribution over time
+- Optimize search experience per intent type
+- Auto-tag queries for downstream analysis
+
+### Search Quality Scoring
+- ML model to predict query satisfaction from UBI events
+- Identify low-quality search results needing improvement
+- A/B test search ranking changes with statistical significance
+
+### Implementation
+- Add Python ML service (separate microservice or AWS Lambda)
+- Export UBI data to ML pipelines (feature engineering)
+- Integrate model predictions back into OpenSearch
+- Create feedback loop for model retraining
 
 ---
 

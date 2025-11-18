@@ -1,11 +1,11 @@
-name: Build & Publish Stats Goblin Image Live
+name: Build & Publish Analytics Goblin Image Live
 
 on:
   push:
     tags:
       - v*
 env:
-  IMAGE_NAME: stats-goblin
+  IMAGE_NAME: analytics-goblin
 
 jobs:
   push:
@@ -55,5 +55,5 @@ jobs:
 
       # - name: Deploy new version
       #   run: |
-      #     sed -i "s/\[\[ .commit_sha \]\]/${GITHUB_SHA}/g" operations/stats-goblin-live.hcl
-      #     nomad job run operations/stats-goblin-live.hcl
+      #     sed -i "s/\[\[ .commit_sha \]\]/${GITHUB_SHA}/g" operations/analytics-goblin-live.hcl
+      #     nomad job run operations/analytics-goblin-live.hcl

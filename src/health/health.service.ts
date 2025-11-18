@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { Queue } from 'bullmq'
-import { InjectQueue } from '@nestjs/bullmq'
+import { createClient } from 'redis'
 import { OpenSearchService } from '../opensearch/opensearch.service'
 
 export interface HealthStatus {
@@ -24,7 +23,6 @@ export class HealthService {
   private readonly logger = new Logger(HealthService.name)
 
   constructor(
-    @InjectQueue('search-metrics') private readonly queue: Queue,
     private readonly openSearchService: OpenSearchService,
     private readonly configService: ConfigService
   ) {}
@@ -55,24 +53,25 @@ export class HealthService {
 
   async checkRedis(): Promise<ServiceStatus> {
     try {
-      const client = await this.queue.client
-      await client.ping()
+      const redisClient = createClient({
+        socket: {
+          host: this.configService.get('redis.host'),
+          port: this.configService.get('redis.port')
+        }
+      })
 
-      // Get queue metrics
-      const [waiting, active, completed, failed] = await Promise.all([
-        this.queue.getWaitingCount(),
-        this.queue.getActiveCount(),
-        this.queue.getCompletedCount(),
-        this.queue.getFailedCount()
-      ])
+      await redisClient.connect()
+      await redisClient.ping()
+      
+      // Get info about sessions
+      const keys = await redisClient.keys('sess:*')
+      await redisClient.quit()
 
       return {
         status: 'up',
         details: {
-          waiting,
-          active,
-          completed,
-          failed
+          sessionCount: keys.length,
+          type: 'session-store'
         }
       }
     } catch (error) {
@@ -88,6 +87,9 @@ export class HealthService {
     try {
       const client = this.openSearchService.getClient()
       const health = await client.cluster.health()
+      
+      // Check if UBI plugin is installed
+      const ubiInstalled = await this.openSearchService.checkUbiPlugin()
 
       return {
         status: 'up',
@@ -95,7 +97,8 @@ export class HealthService {
           clusterName: health.body.cluster_name,
           clusterStatus: health.body.status,
           numberOfNodes: health.body.number_of_nodes,
-          activeShards: health.body.active_shards
+          activeShards: health.body.active_shards,
+          ubiPluginInstalled: ubiInstalled
         }
       }
     } catch (error) {

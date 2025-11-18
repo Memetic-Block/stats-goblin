@@ -1,57 +1,57 @@
-# Stats Goblin Architecture
+# Analytics Goblin Architecture
 
 ## System Overview
 
 ```
 ┌─────────────────┐
+│  Frontend App   │
+│   (Browser)     │
+└────────┬────────┘
+         │ 1. Request session ID
+         ▼
+┌─────────────────────────────────┐
+│      Analytics Goblin           │
+│   GET /session/init             │
+│   ?client_name=my-app           │
+│   &client_version=1.0.0         │
+└────────┬────────────────────────┘
+         │ 2. Create session & client_id
+         │    my-app@1.0.0@sess_abc123
+         ▼
+┌─────────────────┐
+│  Redis Store    │
+│ (Sessions)      │
+│ sess:abc123     │
+└─────────────────┘
+         
+         │ 3. User performs searches
+         ▼
+┌─────────────────┐
 │   Search API    │
-│  (Producer)     │
+│ (with UBI)      │
 └────────┬────────┘
-         │ Publish metrics events
-         ▼
-┌─────────────────┐
-│  Redis/BullMQ   │
-│    (Queue)      │
-└────────┬────────┘
-         │ search-metrics queue
-         ▼
-┌─────────────────┐
-│  Stats Goblin   │
-│   (Consumer)    │
-│                 │
-│ ┌─────────────┐ │
-│ │  Metrics    │ │──── Process events
-│ │  Consumer   │ │     with retries
-│ └──────┬──────┘ │
-│        │        │
-│        ▼        │
-│ ┌─────────────┐ │
-│ │ OpenSearch  │ │──── Index to
-│ │  Indexer    │ │     daily indices
-│ └──────┬──────┘ │
-└────────┼────────┘
-         │
+         │ 4. OpenSearch UBI Plugin
+         │    captures queries & events
          ▼
 ┌─────────────────┐
 │   OpenSearch    │
 │   (Storage)     │
 │                 │
-│ search-metrics- │
-│   2025-11-14    │
-│   2025-11-13    │
-│      ...        │
+│ ubi_queries     │──── Query data
+│ ubi_events      │──── User events
 └────────┬────────┘
          │
+         │ 5. Query analytics
          ▼
 ┌─────────────────┐
-│  Stats Goblin   │
-│ Analytics API   │
+│ Analytics Goblin│
+│  Analytics API  │
 │                 │
 │ GET /analytics/ │
 │ - top-searches  │
-│ - zero-results  │
 │ - popular-docs  │
-│ - trends        │
+│ - events-by-    │
+│   action        │
 │ - stats         │
 └────────┬────────┘
          │
@@ -64,99 +64,101 @@
 
 ## Component Breakdown
 
-### 1. Search API (External)
-- Publishes search metrics to BullMQ queue
-- Fire-and-forget pattern (non-blocking)
-- Includes query, results, timing, and hit details
+### 1. Session Management
+- **Session Module**: Provides session IDs for tracking user behavior
+- **Client Validation**: Validates client_name against whitelist
+  - Env-based configuration: `ALLOWED_CLIENT_NAMES=my-app,another-app`
+  - Alphanumeric + hyphens, 2-50 characters
+- **Version Validation**: Semantic versioning format (e.g., `1.0.0`, `2.1.3-beta`)
+- **Client ID Format**: `{client_name}@{client_version}@{session_id}`
+- **Storage**: Redis-backed express-session
+  - Rolling sessions (extends on activity)
+  - Secure cookies in production
+  - Prefix: `sess:`
 
-### 2. Redis/BullMQ
-- Message broker for event streaming
-- Supports standalone and Sentinel modes
-- Queue: `search-metrics`
-- Job features:
-  - Deduplication by hash
-  - 3 retry attempts
-  - Exponential backoff
-  - Failed job retention (last 100)
+### 2. Rate Limiting (Tiered)
+Three layers of protection:
 
-### 3. Stats Goblin Consumer
-- **Metrics Consumer**: BullMQ worker process
-  - Processes jobs from `search-metrics` queue
-  - Handles errors with automatic retries
-  - Logs processing metrics
-  
-- **OpenSearch Indexer**: Indexing service
-  - Creates daily-rolled indices
-  - Applies index templates
-  - Optimized mappings for search analytics
-  - Graceful error handling
+| Tier | Scope | Limit | Purpose |
+|------|-------|-------|---------|
+| Global | IP address | 20 req/min | Prevent abuse |
+| Session | Session ID | 100 req/10min | Fair usage per user |
+| Burst | IP address | 3 req/sec | Prevent rapid hammering |
 
-### 4. OpenSearch
-- **Storage Layer**
-  - Daily indices: `search-metrics-YYYY-MM-DD`
-  - Configurable retention (default: 30 days)
-  - Nested document support for hit arrays
-  
-- **Index Template**
-  ```json
-  {
-    "mappings": {
-      "properties": {
-        "requestId": { "type": "keyword" },
-        "query": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
-        "executionTimeMs": { "type": "integer" },
-        "totalResults": { "type": "integer" },
-        "timestamp": { "type": "date" },
-        "hits": {
-          "type": "nested",
-          "properties": {
-            "documentId": { "type": "keyword" },
-            "urlHost": { "type": "keyword" },
-            "score": { "type": "float" }
-          }
-        }
-      }
-    }
-  }
-  ```
+- **Distributed Storage**: Redis-based throttler storage
+- **Proxy Support**: Custom guard extracts real IP from `X-Forwarded-For`
+- **Response Headers**: 
+  - `X-RateLimit-Limit`
+  - `X-RateLimit-Remaining`
+  - `X-RateLimit-Reset`
 
-### 5. Analytics API
-REST endpoints for querying aggregated metrics:
+### 3. OpenSearch with UBI Plugin
+- **UBI (User Behavior Insights)**: OpenSearch plugin that automatically captures:
+  - **Queries**: `ubi_queries` index
+    - `client_id`: Client identifier from session
+    - `query_id`: Unique query identifier
+    - `user_query`: The search query text
+    - `timestamp`: When the query was executed
+  - **Events**: `ubi_events` index
+    - `query_id`: Links to originating query
+    - `action_name`: Event type (click, scroll, etc.)
+    - `event_attributes.object.object_id`: Document ID
+    - `session_id`: Session identifier
 
-| Endpoint | Purpose | Aggregations Used |
-|----------|---------|-------------------|
-| `GET /analytics/top-searches` | Most frequent queries | Terms aggregation on `query.keyword` |
-| `GET /analytics/zero-results` | Queries with no results | Filtered terms aggregation |
-| `GET /analytics/popular-documents` | Most-returned documents | Nested aggregation on `hits` |
-| `GET /analytics/performance-trends` | Time-series performance | Date histogram with percentiles |
-| `GET /analytics/stats` | Overall statistics | Cardinality, averages, filters |
+- **Plugin Requirement**: Must have UBI plugin installed
+  - Verified via health check: `/health/opensearch`
+  - Plugin creates indices automatically
 
-### 6. Health Monitoring
+### 4. Analytics API
+REST endpoints for querying UBI data:
+
+| Endpoint | Purpose | Data Source |
+|----------|---------|-------------|
+| `GET /analytics/top-searches` | Most frequent queries | `ubi_queries` aggregation |
+| `GET /analytics/popular-documents` | Most-clicked documents | `ubi_events` (action=click) |
+| `GET /analytics/events-by-action` | Event counts by type | `ubi_events` aggregation |
+| `GET /analytics/stats` | Overall statistics | Both indices |
+
+### 5. Health Monitoring
 - `GET /health` - Overall system health
-- `GET /health/redis` - Queue metrics and connectivity
-- `GET /health/opensearch` - Cluster status and shards
+- `GET /health/redis` - Session store connectivity & session count
+- `GET /health/opensearch` - Cluster status & UBI plugin verification
 
 ## Data Flow
 
-### Event Publishing (Search API)
+### Session Initialization
 ```
-User Search → Search API → OpenSearch Query → Results
+Frontend → GET /session/init
+              ?client_name=my-app
+              &client_version=1.0.0
                     ↓
-              Async publish to BullMQ
+         Validate client_name (whitelist)
                     ↓
-              (Search continues)
+         Validate client_version (semver)
+                    ↓
+         Create express-session
+                    ↓
+         Store in Redis (sess:abc123)
+                    ↓
+         Construct client_id:
+         my-app@1.0.0@sess_abc123
+                    ↓
+         Return { sessionId, clientId }
 ```
 
-### Event Processing (Stats Goblin)
+### Search & Event Tracking (External)
 ```
-BullMQ Queue → Consumer picks job
+User Search → Search API with UBI
                     ↓
-              Validate event schema
+         OpenSearch UBI Plugin intercepts
                     ↓
-              Index to OpenSearch
+         Write to ubi_queries index
+         (includes client_id from request)
                     ↓
-              [Success] → Remove job
-              [Failure] → Retry (max 3)
+         User clicks result
+                    ↓
+         Write to ubi_events index
+         (includes query_id, action, object_id)
 ```
 
 ### Analytics Query
@@ -165,13 +167,13 @@ Client Request → Analytics Controller
                        ↓
                 Analytics Service
                        ↓
-                Build OpenSearch aggregation
+         Query ubi_queries/ubi_events
+         with date range filter
                        ↓
-                Execute query
+         Aggregate results
+         (top searches, popular docs, etc.)
                        ↓
-                Transform results
-                       ↓
-                Return JSON response
+         Transform and return JSON
 ```
 
 ## Configuration Management
@@ -180,9 +182,9 @@ Client Request → Analytics Controller
 
 ```
 src/config/
-  ├── redis.config.ts      - Redis/BullMQ connection
+  ├── redis.config.ts      - Redis connection & session store
   ├── opensearch.config.ts - OpenSearch client config
-  └── app.config.ts        - Application settings
+  └── app.config.ts        - App settings, session, throttle, whitelist
 ```
 
 All configs use environment variables with validation:
@@ -190,10 +192,35 @@ All configs use environment variables with validation:
 - Registered globally with `ConfigModule`
 - Injected via dependency injection
 
+### Key Environment Variables
+
+```bash
+# Session Management
+SESSION_SECRET=your-secret-key-here
+SESSION_MAX_AGE_MS=86400000  # 24 hours
+SESSION_SECURE=false          # true in production
+TRUST_PROXY=false             # true behind reverse proxy
+
+# Rate Limiting
+THROTTLE_GLOBAL_LIMIT=20      # req/min per IP
+THROTTLE_SESSION_LIMIT=100    # req/10min per session
+THROTTLE_BURST_LIMIT=3        # req/sec per IP
+
+# Client Validation
+ALLOWED_CLIENT_NAMES=my-app,frontend,mobile-app
+
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# OpenSearch
+OPENSEARCH_HOST=http://localhost:9200
+```
+
 ## Scalability Patterns
 
 ### Horizontal Scaling
-Run multiple Stats Goblin instances:
+Run multiple Analytics Goblin instances:
 ```bash
 # Instance 1
 PORT=3001 npm run start:prod
@@ -211,77 +238,106 @@ All instances consume from same BullMQ queue:
 - Linear scaling with worker count
 
 ### Vertical Scaling
-- Increase BullMQ concurrency per worker
+- Increase Redis memory for more sessions
 - Add more CPU/RAM to OpenSearch nodes
 - Optimize index shard allocation
 
 ## Resilience & Reliability
 
 ### Graceful Degradation
-- Search API continues if metrics queue fails
-- Consumer retries on OpenSearch errors
+- Analytics API continues if OpenSearch temporarily unavailable
+- Session creation continues if Redis connection recovers
 - Health checks detect partial failures
 
 ### Error Handling
 ```
-BullMQ Job Error
+Session Init Error
       ↓
-Retry #1 (after 1s)
+Validate client_name/version
       ↓
-Retry #2 (after 2s)
+[Invalid] → 400 Bad Request
+[Valid but Redis down] → 503 Service Unavailable
       ↓
-Retry #3 (after 4s)
+Create session in Redis
       ↓
-Move to failed queue
+Return session ID & client_id
+```
+
+### Rate Limiting Behavior
+```
+Request arrives
       ↓
-Alert/Manual review
+Check global IP limit (20/min)
+      ↓ [exceeded]
+429 Too Many Requests
+X-RateLimit-Limit: 20
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1234567890
+      ↓ [ok]
+Check session limit (100/10min)
+      ↓ [exceeded]
+429 Too Many Requests
+      ↓ [ok]
+Check burst limit (3/sec)
+      ↓ [ok]
+Process request
 ```
 
 ### Data Durability
-- BullMQ: Redis persistence (AOF/RDB)
+- Sessions: Redis persistence (AOF/RDB)
 - OpenSearch: Replica shards
-- Daily index rollover for retention
+- UBI indices managed by plugin
 
 ## Security Considerations
 
 ### Current Implementation
-- No authentication on analytics endpoints
+- Client validation via whitelist (env-based)
+- Semantic version format validation
+- Three-tier rate limiting
+- Secure cookies in production
+- Proxy trust for real IP extraction
 - CORS configured via environment variable
 - OpenSearch basic auth support
 
 ### Planned Enhancements (see future-improvements.md)
 - JWT-based API authentication
-- Role-based access control
-- PII detection and scrubbing
-- Audit logging
+- Role-based access control for analytics endpoints
+- PII detection in UBI data
+- Audit logging for session creation
 
 ## Performance Optimization
 
 ### Query Optimization
-- Index templates with optimized mappings
-- Keyword fields for exact-match aggregations
-- Nested objects for hit arrays
-- Date histogram with fixed intervals
+- UBI plugin handles indexing automatically
+- Aggregations on keyword fields (client_id, query_id)
+- Date range filters on timestamp fields
+- Efficient nested queries for events
+
+### Session Optimization
+- Redis-backed session storage
+- Rolling sessions extend on activity
+- Configurable session TTL
 
 ### Future Optimizations
-- Pre-computed rollups (hourly/daily)
-- Redis caching layer for hot queries
+- Pre-computed rollups (hourly/daily analytics)
+- Redis caching layer for hot analytics queries
 - Query result pagination
 - OpenSearch query cache enablement
 
 ## Monitoring Metrics
 
 ### Operational Metrics
-- Queue depth (waiting jobs)
-- Processing rate (jobs/minute)
-- Error rate (failed jobs %)
-- OpenSearch indexing latency
+- Session creation rate (sessions/minute)
+- Active session count (Redis keys)
+- Rate limit hit rate (429 responses %)
+- OpenSearch query latency
+- UBI plugin health status
 
 ### Business Metrics
-- Search volume trends
-- Zero-result rate
-- Average search latency
-- Popular content identification
+- Search volume trends (from ubi_queries)
+- Event distribution by action (from ubi_events)
+- Popular documents (click events)
+- Unique users/sessions over time
 
 ## Technology Stack
 
@@ -289,43 +345,82 @@ Alert/Manual review
 |-----------|-----------|---------|
 | Framework | NestJS | 11.x |
 | Language | TypeScript | 5.7 |
-| Queue | BullMQ | 5.x |
-| Cache/Queue Broker | Redis | 7.x |
+| Sessions | express-session | 1.18.x |
+| Session Store | connect-redis | 9.x |
+| Rate Limiting | @nestjs/throttler | 6.4.x |
+| Cache/Session Store | Redis | 7.x |
 | Search Engine | OpenSearch | 2.x |
+| UBI Plugin | OpenSearch UBI | Latest |
+| Validation | class-validator | 0.14.x |
 | Runtime | Node.js | 18+ or 20+ |
 
 ## Directory Structure
 
 ```
-stats-goblin/
+analytics-goblin/
 ├── src/
 │   ├── analytics/          # Analytics API endpoints
 │   │   ├── analytics.controller.ts
 │   │   ├── analytics.service.ts
 │   │   ├── analytics.module.ts
 │   │   └── interfaces/
-│   ├── config/             # Configuration modules
-│   │   ├── redis.config.ts
-│   │   ├── opensearch.config.ts
-│   │   └── app.config.ts
-│   ├── health/             # Health check endpoints
+│   │       └── analytics.interface.ts  # UBI data types
+│   ├── session/            # Session management
+│   │   ├── session.controller.ts
+│   │   ├── session.service.ts
+│   │   ├── session.module.ts
+│   │   └── dto/
+│   │       └── init-session.dto.ts     # Validation
+│   ├── health/             # Health checks
 │   │   ├── health.controller.ts
 │   │   ├── health.service.ts
 │   │   └── health.module.ts
-│   ├── metrics/            # Event consumer
-│   │   ├── metrics.consumer.ts
-│   │   ├── metrics.module.ts
-│   │   └── interfaces/
-│   ├── opensearch/         # OpenSearch service
-│   │   ├── opensearch.service.ts
+│   ├── opensearch/         # OpenSearch client
+│   │   ├── opensearch.service.ts       # UBI queries
 │   │   └── opensearch.module.ts
+│   ├── config/             # Configuration
+│   │   ├── app.config.ts               # Session, throttle, whitelist
+│   │   ├── redis.config.ts             # Redis connection
+│   │   └── opensearch.config.ts
+│   ├── common/             # Shared utilities
+│   │   └── guards/
+│   │       └── throttler-proxy.guard.ts  # Real IP extraction
 │   ├── app.module.ts       # Root module
-│   └── main.ts             # Application entry
-├── docs/                   # Documentation
-│   ├── architecture.md
-│   ├── api-examples.md
-│   └── future-improvements.md
-├── docker-compose.yml      # Local development stack
-├── .env.example           # Environment template
-└── README.md              # Project overview
+│   ├── app.controller.ts
+│   ├── app.service.ts
+│   └── main.ts             # Bootstrap with session config
+├── docs/
+│   ├── architecture.md     # This file
+│   ├── api-examples.md     # API usage examples
+│   └── local-development.md
+└── test/
+    └── app.e2e-spec.ts
 ```
+
+## Key Differences from Original Design
+
+### Removed Components
+- ❌ BullMQ queue consumer
+- ❌ Metrics indexing service
+- ❌ Custom index templates
+- ❌ Daily index rollover
+- ❌ Zero-results tracking (now in UBI)
+- ❌ Performance trends (now in UBI)
+
+### New Components
+- ✅ Session management module
+- ✅ Client validation with whitelist
+- ✅ Three-tier rate limiting
+- ✅ UBI-based analytics
+- ✅ OpenSearch UBI plugin integration
+- ✅ Redis session store
+
+### Changed Behavior
+- **Before**: Search API → BullMQ → Consumer → OpenSearch
+- **After**: Frontend → Session Init → Search API (with UBI) → OpenSearch UBI Plugin
+
+## Related Documentation
+- [API Examples](./api-examples.md) - Usage examples for all endpoints
+- [Local Development](./local-development.md) - Setup and testing
+- [Future Improvements](./future-improvements.md) - Roadmap
+
