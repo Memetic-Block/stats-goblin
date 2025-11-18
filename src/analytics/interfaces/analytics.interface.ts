@@ -1,10 +1,17 @@
-// UBI Query tracking interfaces
+/**
+ * UBI Query interface following UBI 1.3.0 schema
+ * https://o19s.github.io/ubi/schema/1.3.0/query.request.schema.json
+ */
 export interface UbiQuery {
+  application: string
   query_id: string
   client_id: string
   user_query: string
   timestamp: string
+  query_attributes?: Record<string, any>
+  object_id_field?: string
   query_response_id?: string
+  query_response_hit_ids?: string[]
 }
 
 export interface UbiEvent {

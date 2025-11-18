@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Client } from '@opensearch-project/opensearch'
+import { UbiQuery } from '../analytics/interfaces/analytics.interface'
 
 @Injectable()
 export class OpenSearchService implements OnModuleInit {
@@ -100,5 +101,78 @@ export class OpenSearchService implements OnModuleInit {
    */
   async getClusterHealth() {
     return this.client.cluster.health()
+  }
+
+  /**
+   * Index a single query document to ubi_queries
+   * Uses create operation to prevent duplicates (409 conflicts are silently handled)
+   */
+  async indexQuery(document: UbiQuery): Promise<void> {
+    try {
+      await this.client.index({
+        index: 'ubi_queries',
+        id: document.query_id,
+        body: document,
+        refresh: false,
+        op_type: 'create'
+      })
+    } catch (error: any) {
+      // Silently handle duplicate query_id (409 conflict)
+      if (error?.meta?.statusCode === 409) {
+        this.logger.debug(
+          `Duplicate query_id: ${document.query_id}, client_id: ${document.client_id}, application: ${document.application}`
+        )
+        return
+      }
+      
+      // Log other errors with metadata only
+      this.logger.error(
+        `Failed to index query - query_id: ${document.query_id}, client_id: ${document.client_id}, application: ${document.application}, error: ${error.message}`
+      )
+    }
+  }
+
+  /**
+   * Bulk index multiple query documents to ubi_queries
+   * Processes documents in chunks to avoid OpenSearch bulk request size limits
+   */
+  async bulkIndexQueries(documents: UbiQuery[], chunkSize: number): Promise<void> {
+    // Split documents into chunks
+    for (let i = 0; i < documents.length; i += chunkSize) {
+      const chunk = documents.slice(i, i + chunkSize)
+      
+      try {
+        // Build bulk operations
+        const operations = chunk.flatMap(doc => [
+          { create: { _index: 'ubi_queries', _id: doc.query_id } },
+          doc
+        ])
+
+        const response = await this.client.bulk({
+          body: operations,
+          refresh: false
+        })
+
+        // Log errors from bulk response
+        if (response.body.errors) {
+          const erroredDocs = response.body.items
+            .filter((item: any) => item.create?.error)
+            .map((item: any) => ({
+              query_id: item.create._id,
+              error: item.create.error.reason || 'Unknown error'
+            }))
+
+          if (erroredDocs.length > 0) {
+            this.logger.error(
+              `Bulk indexing errors (chunk ${i / chunkSize + 1}): ${JSON.stringify(erroredDocs)}`
+            )
+          }
+        }
+      } catch (error: any) {
+        this.logger.error(
+          `Failed to bulk index chunk ${i / chunkSize + 1} (${chunk.length} documents): ${error.message}`
+        )
+      }
+    }
   }
 }

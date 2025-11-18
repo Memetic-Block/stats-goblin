@@ -1,51 +1,37 @@
 # Analytics Goblin 📊👹
 
-A NestJS-based session management and analytics microservice for tracking user behavior using OpenSearch with UBI (User Behavior Insights).
+A NestJS-based telemetry service for tracking client-side search behavior using OpenSearch with UBI (User Behavior Insights) 1.3.0 specification.
 
 ## Features
 
-- **Session Management** - Provides session IDs for frontend tracking with client validation
+- **Session Management** - GDPR-friendly session IDs for client-side storage (no cookies)
+- **Client-Side Query Submission** - Fire-and-forget endpoints for GraphQL search telemetry
+- **UBI 1.3.0 Compliant** - Follows official OpenSearch User Behavior Insights schema
 - **Two-Tier Rate Limiting** - IP-based rate limiting with GDPR-compliant anonymization
-- **UBI Analytics** - Query analytics from OpenSearch UBI plugin (queries and events)
-- **Health Monitoring** - Service health checks for Redis sessions and OpenSearch UBI plugin
-- **Client Validation** - Environment-based whitelist for allowed clients
-- **Secure Sessions** - Redis-backed session storage with rolling expiration
+- **Health Monitoring** - Simple health check endpoint
+- **Client Validation** - Environment-based whitelist for allowed clients and applications
+- **Batch Support** - Efficient batch submission for multiple queries
 
 ## Architecture
 
 ```
-Frontend → Session Init → Search API (with UBI) → OpenSearch UBI Plugin
-                                                         ↓
-                                                   ubi_queries
-                                                   ubi_events
-                                                         ↓
-                                               Analytics Goblin API
+Frontend → Session Init → Analytics Goblin (session_id, client_id)
+         ↓
+Third-Party GraphQL Search (images/video/audio)
+         ↓
+Submit Query + Results → Analytics Goblin → OpenSearch ubi_queries
 ```
 
-1. Frontend requests session ID from Analytics Goblin
-2. Frontend includes client_id in search requests to Search API
-3. OpenSearch UBI plugin captures queries and events automatically
-4. Analytics Goblin provides aggregated analytics from UBI indices
+1. Frontend requests session ID from Analytics Goblin (client-side storage)
+2. Frontend performs searches on third-party GraphQL APIs
+3. Frontend submits query + results to Analytics Goblin (fire-and-forget)
+4. Analytics Goblin writes to OpenSearch `ubi_queries` index following UBI 1.3.0 schema
 
 ## Prerequisites
 
 - Node.js 18+ or 20+
-- Redis 7.x (for session storage)
-- OpenSearch 2.x with UBI plugin installed
-
-### Installing OpenSearch UBI Plugin
-
-The UBI plugin must be installed on your OpenSearch cluster:
-
-```bash
-# Download and install the UBI plugin
-bin/opensearch-plugin install https://github.com/opensearch-project/user-behavior-insights/releases/download/latest/opensearch-ubi-plugin.zip
-
-# Restart OpenSearch
-systemctl restart opensearch
-```
-
-Verify installation via health check: `GET /health/opensearch`
+- Redis 7.x (for rate limiting storage)
+- OpenSearch 2.x (for storing UBI query data)
 
 ## Quick Start
 
@@ -66,7 +52,7 @@ cp .env.example .env
 Key configuration:
 
 ```bash
-# Redis (Rate Limiter Storage Only - No Sessions)
+# Redis (Rate Limiter Storage Only)
 REDIS_HOST=localhost
 REDIS_PORT=6379
 
@@ -83,7 +69,16 @@ THROTTLE_GLOBAL_LIMIT=20      # req/min per anonymized IP
 THROTTLE_BURST_LIMIT=3        # req/sec per anonymized IP
 
 # Client Validation
-ALLOWED_CLIENT_NAMES=my-app,frontend-app,mobile-app
+ALLOWED_CLIENT_NAMES=web,mobile-ios,mobile-android
+
+# Application Types (for GraphQL searches)
+ALLOWED_APPLICATIONS=graphql-images,graphql-video,graphql-audio
+
+# Query Limits
+MAX_QUERY_LENGTH=5000
+MAX_BATCH_SIZE=50
+MAX_QUERY_RESPONSE_HITS=100
+BULK_CHUNK_SIZE=20
 
 # Application
 PORT=3001
@@ -117,6 +112,19 @@ npm run start:prod
 
 ## API Endpoints
 
+### Health Check
+
+Simple health check (does not test dependencies):
+
+```bash
+GET /health
+```
+
+**Response:**
+```
+OK
+```
+
 ### Session Management
 
 #### Initialize Session
@@ -124,7 +132,7 @@ npm run start:prod
 Request a new session ID for tracking user behavior (GDPR-friendly - no server-side storage):
 
 ```bash
-GET /session/init?client_name=my-app&client_version=1.0.0
+GET /session/init?client_name=web&client_version=1.0.0
 ```
 
 **Query Parameters:**
@@ -135,204 +143,128 @@ GET /session/init?client_name=my-app&client_version=1.0.0
 ```json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "client_id": "my-app@1.0.0@550e8400-e29b-41d4-a716-446655440000"
+  "client_id": "web@1.0.0@550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 
-**Important - GDPR Compliance:**
-- ✅ No cookies set (no `Set-Cookie` header)
+**GDPR Compliance:**
+- ✅ No cookies set
 - ✅ No server-side session storage
-- ✅ Frontend stores `session_id` in localStorage
-- ✅ No personal data collected or stored
+- ✅ Frontend stores in localStorage
 - ✅ IPs anonymized before rate limiting
 
-**Rate Limits:**
-- Global: 20 requests/minute per IP (anonymized)
-- Burst: 3 requests/second per IP (anonymized)
+### Query Submission (UBI 1.3.0)
 
-**Response Headers:**
-```
-X-RateLimit-Limit: 20
-X-RateLimit-Remaining: 19
-X-RateLimit-Reset: 1234567890
-```
+#### Submit Single Query
 
-### Health Checks
+Fire-and-forget endpoint for submitting search queries and results:
 
 ```bash
-# Overall health
-GET /health
+POST /analytics/queries
+Content-Type: application/json
 
-# Redis health (rate limiter storage)
-GET /health/redis
-
-# OpenSearch health (UBI plugin verification)
-GET /health/opensearch
-```
-
-**Example Response:**
-```json
 {
-  "status": "ok",
-  "info": {
-    "redis": {
-      "status": "up"
-    },
-    "opensearch": {
-      "status": "up",
-      "ubiPluginInstalled": true
-    }
+  "application": "graphql-images",
+  "query_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_id": "web@1.0.0@123e4567-e89b-12d3-a456-426614174000",
+  "user_query": "kubernetes deployment guide",
+  "timestamp": "2025-11-17T10:30:00.000Z",
+  "query_response_hit_ids": ["img-001", "img-002", "img-003"],
+  "query_attributes": {
+    "filters": ["type:tutorial"],
+    "result_count": 3
   }
 }
 ```
 
-### Analytics Endpoints
+**Response:**
+```
+200 OK
+```
 
-All analytics endpoints require `start` and `end` query parameters (ISO 8601 format).
+**Rate Limit:** 100 requests/minute per anonymized IP
 
-#### Top Searches
+#### Submit Batch Queries
 
-Get most frequent search queries:
+Submit multiple queries in a single request:
 
 ```bash
-GET /analytics/top-searches?start=2025-01-01T00:00:00Z&end=2025-01-31T23:59:59Z&limit=10
-```
+POST /analytics/queries/batch
+Content-Type: application/json
 
-**Response:**
-```json
-[
-  {
-    "query": "nestjs tutorial",
-    "count": 1250,
-    "uniqueUsers": 850
-  }
-]
-```
-
-#### Popular Documents
-
-Find most-clicked documents:
-
-```bash
-GET /analytics/popular-documents?start=2025-01-01T00:00:00Z&end=2025-01-31T23:59:59Z&limit=10
-```
-
-**Response:**
-```json
-[
-  {
-    "documentId": "doc-12345",
-    "clickCount": 3500,
-    "uniqueUsers": 2100
-  }
-]
-```
-
-#### Events by Action
-
-Get event counts grouped by action type:
-
-```bash
-GET /analytics/events-by-action?start=2025-01-01T00:00:00Z&end=2025-01-31T23:59:59Z
-```
-
-**Response:**
-```json
-[
-  {
-    "action": "click",
-    "count": 15000
-  },
-  {
-    "action": "scroll",
-    "count": 8500
-  }
-]
-```
-
-#### Overall Statistics
-
-Get summary statistics across all UBI data:
-
-```bash
-GET /analytics/stats?start=2025-01-01T00:00:00Z&end=2025-01-31T23:59:59Z
-```
-
-**Response:**
-```json
 {
-  "totalQueries": 50000,
-  "uniqueQueries": 12000,
-  "totalEvents": 75000,
-  "uniqueUsers": 8500,
-  "topActions": [
-    { "action": "click", "count": 45000 },
-    { "action": "scroll", "count": 20000 }
+  "queries": [
+    {
+      "application": "graphql-images",
+      "query_id": "query-001",
+      "client_id": "web@1.0.0@123e4567-e89b-12d3-a456-426614174000",
+      "user_query": "docker compose examples",
+      "timestamp": "2025-11-17T10:30:00.000Z",
+      "query_response_hit_ids": ["img-101", "img-102"]
+    },
+    {
+      "application": "graphql-video",
+      "query_id": "query-002",
+      "client_id": "web@1.0.0@123e4567-e89b-12d3-a456-426614174000",
+      "user_query": "nestjs tutorial",
+      "timestamp": "2025-11-17T10:31:00.000Z",
+      "query_response_hit_ids": ["vid-201", "vid-202"]
+    }
   ]
 }
 ```
 
+**Response:**
+```
+200 OK
+```
+
+**Rate Limit:** 10 requests/minute per anonymized IP
+
+**UBI 1.3.0 Schema Fields:**
+- `application` (required): One of `graphql-images`, `graphql-video`, `graphql-audio`
+- `query_id` (required): Unique query identifier (UUID recommended)
+- `client_id` (required): From session init
+- `user_query` (required): Search query text (max 5000 chars)
+- `timestamp` (optional): UTC ISO 8601 with Z suffix (auto-generated if missing)
+- `query_response_hit_ids` (optional): Array of result IDs (max 100)
+- `query_attributes` (optional): Additional metadata
+- `object_id_field` (optional): Field name for object IDs
+- `query_response_id` (optional): Response identifier
+
 ## Frontend Integration
 
-### Step 1: Initialize Session
-
-When your frontend application loads (GDPR-friendly, no cookies):
+### Quick Example
 
 ```javascript
-// Initialize session - no cookies, all client-side
-const response = await fetch(
-  'http://localhost:3001/session/init?client_name=my-app&client_version=1.0.0'
-  // Note: NO credentials option needed - no cookies!
-);
+// 1. Initialize session
+const { session_id, client_id } = await fetch(
+  'http://localhost:3001/session/init?client_name=web&client_version=1.0.0'
+).then(r => r.json());
 
-const { session_id, client_id } = await response.json();
-
-// Store ONLY in localStorage (client-side, not tracked by server)
 localStorage.setItem('sessionId', session_id);
 localStorage.setItem('clientId', client_id);
 
-// GDPR: User controls this data, can clear localStorage anytime
-```
+// 2. Perform GraphQL search on third-party API
+const results = await searchThirdPartyAPI('kubernetes tutorial');
 
-### Step 2: Include client_id in Search Requests
-
-When making search requests to your Search API:
-
-```javascript
-const clientId = localStorage.getItem('clientId');
-
-const searchResponse = await fetch('http://your-search-api/search', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    query: 'user search query',
-    client_id: clientId  // UBI plugin will track this
-  })
-});
-```
-
-### Step 3: Track Events (Optional)
-
-If your Search API supports UBI event tracking:
-
-```javascript
-// Track document click
-await fetch('http://your-search-api/events', {
+// 3. Submit to Analytics Goblin (fire-and-forget)
+fetch('http://localhost:3001/analytics/queries', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    query_id: 'query-123',  // From search response
-    action_name: 'click',
-    event_attributes: {
-      object: {
-        object_id: 'doc-12345'
-      }
-    }
-  })
-});
+    application: 'graphql-images',
+    query_id: crypto.randomUUID(),
+    client_id: localStorage.getItem('clientId'),
+    user_query: 'kubernetes tutorial',
+    timestamp: new Date().toISOString(),
+    query_response_hit_ids: results.map(r => r.id)
+  }),
+  keepalive: true
+}).catch(() => {}); // Silently fail - analytics shouldn't break UX
 ```
+
+See `docs/frontend-implementation.md` for complete integration guide.
 
 ## Rate Limiting
 
