@@ -53,7 +53,7 @@ jobs:
           docker push $GHCR_IMAGE_ID:${GITHUB_SHA}
           docker push $GHCR_IMAGE_ID:${VERSION}
 
-      # - name: Deploy new version
-      #   run: |
-      #     sed -i "s/\[\[ .commit_sha \]\]/${GITHUB_SHA}/g" operations/analytics-goblin-live.hcl
-      #     nomad job run operations/analytics-goblin-live.hcl
+      - name: Deploy new version
+        run: |
+          sed -i "s/\[\[ .commit_sha \]\]/${GITHUB_SHA}/g" operations/analytics-goblin-live.hcl
+          nomad job run operations/analytics-goblin-live.hcl

@@ -7,15 +7,11 @@ export interface OpenSearchConfig {
   ssl?: {
     rejectUnauthorized: boolean
   }
-  metricsIndexPrefix: string
-  retentionDays: number
 }
 
 export default registerAs('opensearch', (): OpenSearchConfig => {
   const config: OpenSearchConfig = {
-    node: process.env.OPENSEARCH_HOST || 'http://localhost:9200',
-    metricsIndexPrefix: process.env.METRICS_INDEX_PREFIX || 'search-metrics',
-    retentionDays: parseInt(process.env.METRICS_RETENTION_DAYS || '30', 10)
+    node: process.env.OPENSEARCH_HOST || 'http://localhost:9200'
   }
 
   // Add authentication if credentials are provided

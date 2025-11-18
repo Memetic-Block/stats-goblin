@@ -1,12 +1,14 @@
 import { NestFactory } from '@nestjs/core'
 import { ConfigService } from '@nestjs/config'
-import { ValidationPipe } from '@nestjs/common'
+import { Logger, ValidationPipe } from '@nestjs/common'
 import { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module'
+import { StructuredExceptionFilter } from './common/filters/structured-exception.filter'
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule)
   const configService = app.get(ConfigService)
+  const logger = new Logger('Bootstrap')
 
   // Trust proxy for X-Forwarded-For headers (needed for IP extraction)
   if (configService.get('app.trustProxy')) {
@@ -22,6 +24,9 @@ async function bootstrap() {
     })
   )
 
+  // Enable structured exception filter for actionable error responses
+  app.useGlobalFilters(new StructuredExceptionFilter())
+
   // Configure CORS
   const corsOrigin = configService.get('app.corsAllowedOrigin')
   app.enableCors({
@@ -32,8 +37,7 @@ async function bootstrap() {
   const port = configService.get('app.port')
   await app.listen(port)
 
-  console.log(`Analytics Goblin running on port ${port}`)
-  console.log(`GDPR Mode: Client-side sessions, anonymized IPs, no tracking`)
+  logger.log(`Analytics GOBLIN MODE ON @ port ${port}`)
 }
 
 bootstrap().catch((error) => {

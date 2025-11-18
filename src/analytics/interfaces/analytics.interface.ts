@@ -20,15 +20,7 @@ export interface UbiEvent {
   session_id?: string
   client_id: string
   timestamp: string
-  event_attributes?: {
-    object?: {
-      object_id: string
-      object_id_field?: string
-    }
-    position?: {
-      ordinal?: number
-    }
-  }
+  event_attributes?: Record<string, any>
 }
 
 // Analytics response interfaces

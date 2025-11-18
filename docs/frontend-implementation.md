@@ -1,4 +1,4 @@
-# Frontend Implementation Guide
+# Analytics Frontend Implementation Guide
 
 This guide provides step-by-step instructions for integrating Analytics Goblin into your frontend web application to track user search behavior using the OpenSearch UBI (User Behavior Insights) 1.3.0 specification.
 
@@ -7,13 +7,15 @@ This guide provides step-by-step instructions for integrating Analytics Goblin i
 Analytics Goblin is a GDPR-compliant analytics service that:
 - Generates session IDs for client-side storage (no cookies)
 - Accepts client-side query submissions for third-party GraphQL searches
+- Supports optional wallet tracking for Arweave dApp users
 - Anonymizes IP addresses for privacy compliance
 - Provides fire-and-forget telemetry endpoints
 
 **Key Privacy Features:**
-- ✅ No server-side sessions
+- ✅ Session tracking with Redis (24h auto-expiration)
 - ✅ No cookies (localStorage only)
 - ✅ IP anonymization (GDPR-compliant)
+- ✅ Opt-in wallet tracking for blockchain users
 - ✅ Client controls session lifecycle
 - ✅ Fire-and-forget submissions (no data returned to client)
 
@@ -23,13 +25,14 @@ Analytics Goblin is a GDPR-compliant analytics service that:
 
 1. [Prerequisites](#prerequisites)
 2. [Session Management](#session-management)
-3. [Tracking Client-Side Searches](#tracking-client-side-searches)
-4. [Batch Submissions](#batch-submissions)
-5. [Complete Integration Example](#complete-integration-example)
-6. [TypeScript Types](#typescript-types)
-7. [Rate Limiting](#rate-limiting)
-8. [Error Handling](#error-handling)
-9. [Best Practices](#best-practices)
+3. [Wallet Tracking (Arweave dApps)](#wallet-tracking-arweave-dapps)
+4. [Tracking Client-Side Searches](#tracking-client-side-searches)
+5. [Batch Submissions](#batch-submissions)
+6. [Complete Integration Example](#complete-integration-example)
+7. [TypeScript Types](#typescript-types)
+8. [Rate Limiting](#rate-limiting)
+9. [Error Handling](#error-handling)
+10. [Best Practices](#best-practices)
 
 ---
 
@@ -70,13 +73,15 @@ const CLIENT_NAME = 'my-search-app';
 const CLIENT_VERSION = '1.0.0';
 const SESSION_STORAGE_KEY = 'analytics_session_id';
 const CLIENT_ID_STORAGE_KEY = 'analytics_client_id';
+const WALLET_STORAGE_KEY = 'analytics_wallet_address';
 
 interface SessionInitResponse {
   session_id: string;
   client_id: string;
+  wallet_address?: string;
 }
 
-async function initializeSession(): Promise<{ sessionId: string; clientId: string }> {
+async function initializeSession(walletAddress?: string): Promise<{ sessionId: string; clientId: string }> {
   // Check if session already exists
   const existingSessionId = localStorage.getItem(SESSION_STORAGE_KEY);
   const existingClientId = localStorage.getItem(CLIENT_ID_STORAGE_KEY);
@@ -87,13 +92,21 @@ async function initializeSession(): Promise<{ sessionId: string; clientId: strin
 
   // Request new session from Analytics Goblin
   try {
+    const headers: Record<string, string> = {
+      'X-Client-Name': CLIENT_NAME,
+      'X-Client-Version': CLIENT_VERSION,
+    };
+    
+    // Add wallet if provided (opt-in analytics)
+    if (walletAddress) {
+      headers['X-Wallet-Address'] = walletAddress;
+    }
+    
     const response = await fetch(
-      `${ANALYTICS_API_URL}/session/init?client_name=${CLIENT_NAME}&client_version=${CLIENT_VERSION}`,
+      `${ANALYTICS_API_URL}/session/init`,
       {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
       }
     );
 
@@ -107,6 +120,11 @@ async function initializeSession(): Promise<{ sessionId: string; clientId: strin
     localStorage.setItem(SESSION_STORAGE_KEY, data.session_id);
     localStorage.setItem(CLIENT_ID_STORAGE_KEY, data.client_id);
     
+    // Store wallet if returned
+    if (data.wallet_address) {
+      localStorage.setItem(WALLET_STORAGE_KEY, data.wallet_address);
+    }
+    
     return { sessionId: data.session_id, clientId: data.client_id };
   } catch (error) {
     console.error('Failed to initialize analytics session:', error);
@@ -118,6 +136,76 @@ async function initializeSession(): Promise<{ sessionId: string; clientId: strin
     return { sessionId: fallbackSessionId, clientId: fallbackClientId };
   }
 }
+
+---
+
+## Wallet Tracking (Arweave dApps)
+
+### Initialize with Wallet (Opt-in)
+
+If user has already connected their Arweave wallet:
+
+```typescript
+// Get wallet address from Arweave wallet
+const walletAddress = await window.arweaveWallet.getActiveAddress();
+
+// Initialize session with wallet
+const { sessionId, clientId } = await initializeSession(walletAddress);
+```
+
+### Add Wallet to Existing Session
+
+If user signs in after browsing anonymously:
+
+```typescript
+async function updateSessionWithWallet(walletAddress: string): Promise<void> {
+  const sessionId = localStorage.getItem(SESSION_STORAGE_KEY);
+  if (!sessionId) {
+    console.warn('No session to update');
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `${ANALYTICS_API_URL}/session/update`,
+      {
+        method: 'PUT',
+        headers: {
+          'X-Session-Id': sessionId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          wallet_address: walletAddress
+        })
+      }
+    );
+
+    const data = await response.json();
+    
+    // Update client_id with wallet suffix
+    const currentClientId = localStorage.getItem(CLIENT_ID_STORAGE_KEY);
+    const updatedClientId = currentClientId + data.client_id;
+    localStorage.setItem(CLIENT_ID_STORAGE_KEY, updatedClientId);
+    localStorage.setItem(WALLET_STORAGE_KEY, data.wallet_address);
+    
+    console.log('Session updated with wallet');
+  } catch (error) {
+    console.error('Failed to update session with wallet:', error);
+  }
+}
+
+// Usage: When user connects wallet
+window.arweaveWallet.on('connect', async () => {
+  const address = await window.arweaveWallet.getActiveAddress();
+  await updateSessionWithWallet(address);
+});
+```
+
+**Wallet Benefits:**
+- Queries automatically include `wallet_address` in `query_attributes`
+- Track user behavior across sessions if same wallet used
+- Opt-in only - no wallet tracking without user consent
+- Can be added retroactively to existing sessions
 
 // Initialize on app load
 let session: { sessionId: string; clientId: string } | null = null;
@@ -189,6 +277,14 @@ interface UbiQuery {
   object_id_field?: string;
 }
 
+interface UbiEvent {
+  query_id: string;
+  action_name: string;
+  client_id: string;
+  timestamp?: string;
+  event_attributes?: Record<string, any>;
+}
+
 export async function submitQuery(
   query: string,
   application: 'graphql-images' | 'graphql-video' | 'graphql-audio',
@@ -209,10 +305,10 @@ export async function submitQuery(
     };
 
     // Fire-and-forget - don't wait for response
-    fetch(`${ANALYTICS_API_URL}/analytics/queries`, {
+    fetch(`${ANALYTICS_API_URL}/analytics/batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(queryData),
+      body: JSON.stringify({ queries: [queryData] }),
       keepalive: true // Ensure request completes even if page unloads
     }).catch(() => {
       // Silently fail - analytics shouldn't break user experience
@@ -303,14 +399,15 @@ async function searchVideos(
 
 ## Batch Submissions
 
-For better performance, accumulate queries and submit them in batches:
+For better performance, accumulate queries and events together and submit them in batches:
 
 ```typescript
 // lib/analytics-queue.ts
 
 class AnalyticsQueue {
-  private queue: UbiQuery[] = [];
-  private readonly batchSize = 10;
+  private queries: UbiQuery[] = [];
+  private events: UbiEvent[] = [];
+  private readonly batchSize = 50;
   private readonly flushInterval = 30000; // 30 seconds
   private flushTimer: number | null = null;
 
@@ -326,11 +423,19 @@ class AnalyticsQueue {
     }
   }
 
-  add(queryData: UbiQuery): void {
-    this.queue.push(queryData);
+  addQuery(queryData: UbiQuery): void {
+    this.queries.push(queryData);
+    this.checkFlush();
+  }
 
-    // Auto-flush when batch size reached
-    if (this.queue.length >= this.batchSize) {
+  addEvent(eventData: UbiEvent): void {
+    this.events.push(eventData);
+    this.checkFlush();
+  }
+
+  private checkFlush(): void {
+    // Auto-flush when total items reach batch size
+    if (this.queries.length + this.events.length >= this.batchSize) {
       this.flush();
     } else {
       // Schedule flush
@@ -347,7 +452,7 @@ class AnalyticsQueue {
   }
 
   flush(): void {
-    if (this.queue.length === 0) return;
+    if (this.queries.length === 0 && this.events.length === 0) return;
 
     // Clear timer
     if (this.flushTimer) {
@@ -355,11 +460,13 @@ class AnalyticsQueue {
       this.flushTimer = null;
     }
 
-    const queries = [...this.queue];
-    this.queue = [];
+    const queries = [...this.queries];
+    const events = [...this.events];
+    this.queries = [];
+    this.events = [];
 
-    // Send batch
-    fetch(`${ANALYTICS_API_URL}/analytics/queries/batch`, {
+    // Send batch with both queries and events
+    fetch(`${ANALYTICS_API_URL}/analytics/batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ queries }),
@@ -400,85 +507,50 @@ export async function submitQueryBatched(
 ```
 
 ---
-### UBI Query Format (Backend Reference)
-
-Your search backend should log queries to OpenSearch's `ubi_queries` index:
-
-```json
-{
-  "query_id": "query-1699999999999",
-  "user_query": "laptop recommendations",
-  "client_id": "my-search-app@1.0.0@sess_abc123xyz",
-  "timestamp": "2025-11-15T10:30:00.000Z",
-  "query_response": {
-    "hits": [
-      {
-        "doc_id": "doc-123",
-        "position": 0
-      }
-    ]
-  }
-}
-```
-
----
 
 ## Tracking User Events
 
 ### UBI Event Tracking
 
-Track user interactions with search results (clicks, hovers, etc.) by sending events to OpenSearch UBI.
-
-**Important:** Like queries, UBI events are typically logged via your **search backend** to maintain data consistency. The frontend sends event data to your backend, which logs to OpenSearch.
+Track user interactions with search results (clicks, hovers, etc.) by sending events to Analytics Goblin alongside queries.
 
 ```typescript
 // lib/analytics.ts
-export interface UBIEvent {
+export interface UbiEvent {
+  query_id: string;
   action_name: string;
   client_id: string;
-  query_id?: string;
-  timestamp: string;
-  event_attributes: {
-    object?: {
-      object_id?: string;
-      object_id_field?: string;
-      description?: string;
-    };
-    position?: {
-      ordinal?: number;
-      x?: number;
-      y?: number;
-    };
-  };
+  timestamp?: string;
+  event_attributes?: Record<string, any>;
 }
 
 export async function trackEvent(
+  queryId: string,
   actionName: string,
-  queryId?: string,
-  attributes: UBIEvent['event_attributes'] = {}
+  attributes: Record<string, any> = {}
 ): Promise<void> {
-  const sessionId = await getSessionId();
-  const clientId = buildClientId(sessionId);
-
-  const event: UBIEvent = {
-    action_name: actionName,
-    client_id: clientId,
-    query_id: queryId,
-    timestamp: new Date().toISOString(),
-    event_attributes: attributes,
-  };
-
   try {
-    // Send to YOUR backend to log in OpenSearch UBI
-    await fetch('https://your-search-api.com/events', {
+    const { clientId } = await getSession();
+
+    const event: UbiEvent = {
+      query_id: queryId,
+      action_name: actionName,
+      client_id: clientId,
+      timestamp: new Date().toISOString(),
+      event_attributes: attributes,
+    };
+
+    // Send to Analytics Goblin (fire-and-forget)
+    fetch(`${ANALYTICS_API_URL}/analytics/batch`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(event),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [event] }),
+      keepalive: true
+    }).catch(() => {
+      // Silently fail - analytics shouldn't break user experience
     });
   } catch (error) {
-    console.error('Failed to track event:', error);
+    console.debug('Event tracking failed:', error);
   }
 }
 ```
@@ -487,12 +559,11 @@ export async function trackEvent(
 
 ```typescript
 // Track result click
-function trackResultClick(docId: string, position: number, queryId: string) {
-  trackEvent('result_click', queryId, {
+function trackResultClick(queryId: string, docId: string, position: number) {
+  trackEvent(queryId, 'click', {
     object: {
       object_id: docId,
-      object_id_field: '_id',
-      description: 'User clicked search result',
+      object_id_field: 'image_id',
     },
     position: {
       ordinal: position,
@@ -501,11 +572,11 @@ function trackResultClick(docId: string, position: number, queryId: string) {
 }
 
 // Track hover/dwell time
-function trackResultHover(docId: string, position: number, queryId: string) {
-  trackEvent('result_hover', queryId, {
+function trackResultHover(queryId: string, docId: string, position: number) {
+  trackEvent(queryId, 'hover', {
     object: {
       object_id: docId,
-      object_id_field: '_id',
+      object_id_field: 'image_id',
     },
     position: {
       ordinal: position,
@@ -513,20 +584,11 @@ function trackResultHover(docId: string, position: number, queryId: string) {
   });
 }
 
-// Track scroll depth
-function trackScrollDepth(depth: number) {
-  trackEvent('scroll', undefined, {
-    position: {
-      y: depth,
-    },
-  });
-}
-
-// Track filter application
-function trackFilterApplied(filterName: string, filterValue: string) {
-  trackEvent('filter_applied', undefined, {
+// Track add to cart
+function trackAddToCart(queryId: string, docId: string) {
+  trackEvent(queryId, 'add_to_cart', {
     object: {
-      description: `${filterName}: ${filterValue}`,
+      object_id: docId,
     },
   });
 }
@@ -546,7 +608,7 @@ interface SearchResultProps {
 
 function SearchResult({ doc, position, queryId }: SearchResultProps) {
   const handleClick = () => {
-    trackResultClick(doc.id, position, queryId);
+    trackResultClick(queryId, doc.id, position);
     // Navigate to result...
   };
 
@@ -585,7 +647,13 @@ class AnalyticsService {
 
     try {
       const response = await fetch(
-        `${ANALYTICS_API_URL}/session/init?client_name=${CLIENT_NAME}&client_version=${CLIENT_VERSION}`
+        `${ANALYTICS_API_URL}/session/init`,
+        {
+          headers: {
+            'X-Client-Name': CLIENT_NAME,
+            'X-Client-Version': CLIENT_VERSION,
+          },
+        }
       );
       const data = await response.json();
       localStorage.setItem(SESSION_STORAGE_KEY, data.session_id);
@@ -605,20 +673,21 @@ class AnalyticsService {
     return `${CLIENT_NAME}@${CLIENT_VERSION}@${this.sessionId}`;
   }
 
-  async trackEvent(actionName: string, queryId?: string, attributes = {}): Promise<void> {
+  async trackEvent(queryId: string, actionName: string, attributes = {}): Promise<void> {
     const event = {
+      query_id: queryId,
       action_name: actionName,
       client_id: this.getClientId(),
-      query_id: queryId,
       timestamp: new Date().toISOString(),
       event_attributes: attributes,
     };
 
-    // Send to your backend
-    await fetch('https://your-search-api.com/events', {
+    // Send to Analytics Goblin
+    fetch(`${ANALYTICS_API_URL}/analytics/batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(event),
+      body: JSON.stringify({ events: [event] }),
+      keepalive: true
     }).catch(console.error);
   }
 
@@ -674,8 +743,8 @@ function SearchPage() {
   };
 
   const handleResultClick = (docId: string, position: number) => {
-    analytics.trackEvent('result_click', queryId, {
-      object: { object_id: docId, object_id_field: '_id' },
+    analytics.trackEvent(queryId, 'click', {
+      object: { object_id: docId, object_id_field: 'image_id' },
       position: { ordinal: position },
     });
   };
@@ -706,23 +775,12 @@ export interface SessionInitResponse {
   message: string;
 }
 
-export interface UBIEvent {
+export interface UbiEvent {
+  query_id: string;
   action_name: string;
   client_id: string;
-  query_id?: string;
-  timestamp: string;
-  event_attributes: {
-    object?: {
-      object_id?: string;
-      object_id_field?: string;
-      description?: string;
-    };
-    position?: {
-      ordinal?: number;
-      x?: number;
-      y?: number;
-    };
-  };
+  timestamp?: string;
+  event_attributes?: Record<string, any>;
 }
 
 export interface TopSearchQuery {
@@ -754,10 +812,10 @@ export interface AnalyticsResponse<T> {
 
 ## Rate Limiting
 
-Analytics Goblin implements two-tier rate limiting based on anonymized IP addresses:
+Analytics Goblin uses Traefik for rate limiting based on anonymized IP addresses:
 
-- **Global Tier**: 20 requests per minute per IP
-- **Burst Tier**: 3 requests per second per IP
+- **Average**: 100 requests per minute per IP
+- **Burst**: 200 requests
 
 ### Handling Rate Limits
 

@@ -1,8 +1,7 @@
-import { Controller, Get, Post, Query, Body, HttpCode, Logger } from '@nestjs/common'
-import { Throttle } from '@nestjs/throttler'
+import { Controller, Post, Body, HttpCode, Logger, ServiceUnavailableException, HttpStatus } from '@nestjs/common'
 import { AnalyticsService } from './analytics.service'
-import { SubmitQueryDto } from './dto/submit-query.dto'
-import { SubmitQueriesBatchDto } from './dto/submit-queries-batch.dto'
+import { SubmitAnalyticsBatchDto } from './dto/submit-analytics-batch.dto'
+import { ErrorAction, ErrorCode } from '../common/dto/error-response.dto'
 
 @Controller('analytics')
 export class AnalyticsController {
@@ -11,26 +10,39 @@ export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
   /**
-   * Submit a single query to UBI (fire-and-forget)
+   * Submit mixed analytics data (queries and events) in batch to UBI (fire-and-forget)
    * Returns 200 OK immediately, processing happens asynchronously
+   * Rate limiting handled by Traefik
+   * 
+   * Throws UnauthorizedException if all sessions in batch are invalid/expired
    */
-  @Post('queries')
+  @Post('batch')
   @HttpCode(200)
-  @Throttle({ global: { limit: 100, ttl: 60000 } })
-  submitQuery(@Body() dto: SubmitQueryDto): void {
-    this.analyticsService.submitQuery(dto)
+  async submitBatch(@Body() dto: SubmitAnalyticsBatchDto): Promise<void> {
+    // Validate that at least one session in the batch exists
+    // If all sessions are invalid/expired, reject the batch
+    await this.analyticsService.validateSessionsInBatch(dto)
+    
+    // Process batch asynchronously (fire-and-forget)
+    this.analyticsService.submitBatch(dto)
   }
 
-  /**
-   * Submit multiple queries in batch to UBI (fire-and-forget)
-   * Returns 200 OK immediately, processing happens asynchronously
-   */
-  @Post('queries/batch')
-  @HttpCode(200)
-  @Throttle({ global: { limit: 10, ttl: 60000 } })
-  submitQueriesBatch(@Body() dto: SubmitQueriesBatchDto): void {
-    this.analyticsService.submitQueriesBatch(dto)
-  }
+  // ========================================
+  // DEPRECATED: Separate query/event endpoints
+  // These are commented out but preserved for reference
+  // ========================================
+
+  // @Post('queries')
+  // @HttpCode(200)
+  // submitQuery(@Body() dto: SubmitQueryDto): void {
+  //   this.analyticsService.submitQuery(dto)
+  // }
+
+  // @Post('queries/batch')
+  // @HttpCode(200)
+  // submitQueriesBatch(@Body() dto: SubmitQueriesBatchDto): void {
+  //   this.analyticsService.submitQueriesBatch(dto)
+  // }
 
   // ========================================
   // DEPRECATED: Read-only analytics endpoints

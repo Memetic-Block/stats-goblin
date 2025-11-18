@@ -132,14 +132,26 @@ OK
 Request a new session ID for tracking user behavior (GDPR-friendly - no server-side storage):
 
 ```bash
-GET /session/init?client_name=web&client_version=1.0.0
+# Anonymous session (no wallet)
+curl -X GET http://localhost:3001/session/init \
+  -H "X-Client-Name: wuzzy-web" \
+  -H "X-Client-Version: 1.0.0"
+
+# Session with wallet (opt-in analytics)
+curl -X GET http://localhost:3001/session/init \
+  -H "X-Client-Name: wuzzy-web" \
+  -H "X-Client-Version: 1.0.0" \
+  -H "X-Wallet-Address: abc123xyz789..."
 ```
 
-**Query Parameters:**
-- `client_name` (required): Alphanumeric + hyphens, 2-50 chars, must be in whitelist
-- `client_version` (required): Semantic version format (e.g., `1.0.0`, `2.1.3-beta`)
+**Required Headers:**
+- `X-Client-Name`: Alphanumeric + hyphens, 2-50 chars, must be in whitelist
+- `X-Client-Version`: Semantic version format (e.g., `1.0.0`, `2.1.3-beta`)
 
-**Response:**
+**Optional Headers:**
+- `X-Wallet-Address`: Arweave wallet address (opt-in for wallet-linked analytics)
+
+**Response (without wallet):**
 ```json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -147,68 +159,84 @@ GET /session/init?client_name=web&client_version=1.0.0
 }
 ```
 
-**GDPR Compliance:**
-- ✅ No cookies set
-- ✅ No server-side session storage
-- ✅ Frontend stores in localStorage
-- ✅ IPs anonymized before rate limiting
-
-### Query Submission (UBI 1.3.0)
-
-#### Submit Single Query
-
-Fire-and-forget endpoint for submitting search queries and results:
-
-```bash
-POST /analytics/queries
-Content-Type: application/json
-
+**Response (with wallet):**
+```json
 {
-  "application": "graphql-images",
-  "query_id": "550e8400-e29b-41d4-a716-446655440000",
-  "client_id": "web@1.0.0@123e4567-e89b-12d3-a456-426614174000",
-  "user_query": "kubernetes deployment guide",
-  "timestamp": "2025-11-17T10:30:00.000Z",
-  "query_response_hit_ids": ["img-001", "img-002", "img-003"],
-  "query_attributes": {
-    "filters": ["type:tutorial"],
-    "result_count": 3
-  }
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_id": "web@1.0.0@550e8400-e29b-41d4-a716-446655440000@abc123xy",
+  "wallet_address": "abc123xyz789..."
 }
 ```
 
-**Response:**
-```
-200 OK
-```
+#### Update Session with Wallet
 
-**Rate Limit:** 100 requests/minute per anonymized IP
-
-#### Submit Batch Queries
-
-Submit multiple queries in a single request:
+Add wallet to existing session (for users who sign in after browsing):
 
 ```bash
-POST /analytics/queries/batch
+curl -X PUT http://localhost:3001/session/update \
+  -H "X-Session-Id: 550e8400-e29b-41d4-a716-446655440000" \
+  -H "Content-Type: application/json" \
+  -d '{"wallet_address": "abc123xyz789..."}'
+```
+
+**Response:**
+```json
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "client_id": "@abc123xy",
+  "wallet_address": "abc123xyz789..."
+}
+```
+
+Client should append `client_id` suffix to their stored client_id.
+
+**GDPR Compliance:**
+- ✅ No cookies set
+- ✅ Session IDs stored in Redis with auto-expiration (24h)
+- ✅ Wallet tracking is opt-in only
+- ✅ Frontend stores in localStorage
+- ✅ IPs anonymized for rate limiting
+
+### Analytics Submission (UBI 1.3.0)
+
+#### Submit Mixed Analytics Batch
+
+Fire-and-forget endpoint for submitting queries and events together:
+
+```bash
+POST /analytics/batch
 Content-Type: application/json
 
 {
   "queries": [
     {
       "application": "graphql-images",
-      "query_id": "query-001",
+      "query_id": "550e8400-e29b-41d4-a716-446655440000",
       "client_id": "web@1.0.0@123e4567-e89b-12d3-a456-426614174000",
-      "user_query": "docker compose examples",
+      "user_query": "kubernetes deployment guide",
       "timestamp": "2025-11-17T10:30:00.000Z",
-      "query_response_hit_ids": ["img-101", "img-102"]
-    },
+      "query_response_hit_ids": ["img-001", "img-002", "img-003"],
+      "query_attributes": {
+        "filters": ["type:tutorial"],
+        "result_count": 3
+      }
+    }
+  ],
+  "events": [
     {
-      "application": "graphql-video",
-      "query_id": "query-002",
+      "query_id": "550e8400-e29b-41d4-a716-446655440000",
+      "action_name": "click",
       "client_id": "web@1.0.0@123e4567-e89b-12d3-a456-426614174000",
-      "user_query": "nestjs tutorial",
-      "timestamp": "2025-11-17T10:31:00.000Z",
-      "query_response_hit_ids": ["vid-201", "vid-202"]
+      "timestamp": "2025-11-17T10:30:15.000Z",
+      "event_attributes": {
+        "object": {
+          "object_id": "img-001",
+          "object_id_field": "image_id"
+        },
+        "position": {
+          "ordinal": 1
+        }
+      }
     }
   ]
 }
@@ -219,18 +247,25 @@ Content-Type: application/json
 200 OK
 ```
 
-**Rate Limit:** 10 requests/minute per anonymized IP
+**Rate Limit:** 100 requests/minute average (200 burst) per anonymized IP (configured in Traefik)
 
-**UBI 1.3.0 Schema Fields:**
+**UBI 1.3.0 Query Schema Fields:**
 - `application` (required): One of `graphql-images`, `graphql-video`, `graphql-audio`
 - `query_id` (required): Unique query identifier (UUID recommended)
 - `client_id` (required): From session init
 - `user_query` (required): Search query text (max 5000 chars)
 - `timestamp` (optional): UTC ISO 8601 with Z suffix (auto-generated if missing)
 - `query_response_hit_ids` (optional): Array of result IDs (max 100)
-- `query_attributes` (optional): Additional metadata
+- `query_attributes` (optional): Additional metadata (wallet auto-added if opted in)
 - `object_id_field` (optional): Field name for object IDs
 - `query_response_id` (optional): Response identifier
+
+**UBI 1.3.0 Event Schema Fields:**
+- `query_id` (required): Associated query identifier
+- `action_name` (required): Event type (e.g., "click", "hover", "add_to_cart")
+- `client_id` (required): From session init
+- `timestamp` (optional): UTC ISO 8601 with Z suffix (auto-generated if missing)
+- `event_attributes` (optional): Event metadata (object, position, etc., wallet auto-added if opted in)
 
 ## Frontend Integration
 
@@ -239,7 +274,13 @@ Content-Type: application/json
 ```javascript
 // 1. Initialize session
 const { session_id, client_id } = await fetch(
-  'http://localhost:3001/session/init?client_name=web&client_version=1.0.0'
+  'http://localhost:3001/session/init',
+  {
+    headers: {
+      'X-Client-Name': 'web',
+      'X-Client-Version': '1.0.0'
+    }
+  }
 ).then(r => r.json());
 
 localStorage.setItem('sessionId', session_id);
@@ -248,17 +289,39 @@ localStorage.setItem('clientId', client_id);
 // 2. Perform GraphQL search on third-party API
 const results = await searchThirdPartyAPI('kubernetes tutorial');
 
-// 3. Submit to Analytics Goblin (fire-and-forget)
-fetch('http://localhost:3001/analytics/queries', {
+// 3. Track search and clicks together
+const queryId = crypto.randomUUID();
+const events = [];
+
+// User clicks on first result
+events.push({
+  query_id: queryId,
+  action_name: 'click',
+  client_id: localStorage.getItem('clientId'),
+  timestamp: new Date().toISOString(),
+  event_attributes: {
+    object: {
+      object_id: results[0].id,
+      object_id_field: 'image_id'
+    },
+    position: { ordinal: 1 }
+  }
+});
+
+// Submit query + events together
+fetch('http://localhost:3001/analytics/batch', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    application: 'graphql-images',
-    query_id: crypto.randomUUID(),
-    client_id: localStorage.getItem('clientId'),
-    user_query: 'kubernetes tutorial',
-    timestamp: new Date().toISOString(),
-    query_response_hit_ids: results.map(r => r.id)
+    queries: [{
+      application: 'graphql-images',
+      query_id: queryId,
+      client_id: localStorage.getItem('clientId'),
+      user_query: 'kubernetes tutorial',
+      timestamp: new Date().toISOString(),
+      query_response_hit_ids: results.map(r => r.id)
+    }],
+    events
   }),
   keepalive: true
 }).catch(() => {}); // Silently fail - analytics shouldn't break UX
@@ -268,12 +331,12 @@ See `docs/frontend-implementation.md` for complete integration guide.
 
 ## Rate Limiting
 
-The service implements GDPR-compliant rate limiting with IP anonymization:
+GDPR-compliant rate limiting with IP anonymization (configured in Traefik):
 
-| Tier | Scope | Limit | Window | Purpose |
-|------|-------|-------|--------|---------|
-| Global | Anonymized IP | 20 req | 1 minute | Prevent abuse |
-| Burst | Anonymized IP | 3 req | 1 second | Prevent hammering |
+**Analytics Submission:**
+- 100 requests/minute average per anonymized IP
+- Burst: 200 requests
+- Period: 1 minute
 
 **IP Anonymization (GDPR Compliant):**
 - IPv4: Last octet removed (`192.168.1.123` → `192.168.1.0`)
@@ -282,8 +345,8 @@ The service implements GDPR-compliant rate limiting with IP anonymization:
 
 **Rate Limit Headers:**
 ```
-X-RateLimit-Limit: 20
-X-RateLimit-Remaining: 15
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 95
 X-RateLimit-Reset: 1234567890
 ```
 
@@ -291,8 +354,9 @@ X-RateLimit-Reset: 1234567890
 ```json
 {
   "statusCode": 429,
-  "message": "ThrottlerException: Too Many Requests"
+  "message": "Too Many Requests"
 }
+```
 ```
 
 ## Client Validation
@@ -312,11 +376,7 @@ ALLOWED_CLIENT_NAMES=my-app,frontend-app,mobile-app
 **Validation Errors:**
 ```json
 {
-  "statusCode": 400,
-  "message": [
-    "client_name must be in the allowed list",
-    "client_version must be a valid semantic version"
-  ]
+  "statusCode": 400
 }
 ```
 
@@ -425,8 +485,9 @@ npm run start:dev
 
 ```bash
 # 1. Initialize session (no cookies, client-side only)
-curl -X GET \
-  'http://localhost:3001/session/init?client_name=test-app&client_version=1.0.0'
+curl -X GET http://localhost:3001/session/init \
+  -H "X-Client-Name: wuzzy-web" \
+  -H "X-Client-Version: 1.0.0"
 
 # Returns:
 # {
@@ -434,10 +495,6 @@ curl -X GET \
 #   "client_id": "test-app@1.0.0@550e8400-e29b-41d4-a716-446655440000"
 # }
 # Note: No Set-Cookie header (GDPR-friendly)
-
-# 2. Make analytics request (no session needed)
-curl -X GET \
-  'http://localhost:3001/analytics/top-searches?start=2025-01-01T00:00:00Z&end=2025-01-31T23:59:59Z&limit=10'
 ```
 
 ### Testing Rate Limits
@@ -485,195 +542,12 @@ This service implements a **low-risk, privacy-first** approach to analytics:
 - **Simplified Compliance**: No consent banners needed for this service
 - **Still Functional**: UBI analytics work without server-side tracking
 
-## Technology Stack
-
-| Component | Technology | Version |
-|-----------|-----------|---------|
-| Framework | NestJS | 11.x |
-| Language | TypeScript | 5.7 |
-| Rate Limiting | @nestjs/throttler | 6.4.x |
-| Validation | class-validator | 0.14.x |
-| Rate Limiter Storage | Redis | 7.x |
-| Search Engine | OpenSearch | 2.x |
-| UBI Plugin | OpenSearch UBI | Latest |
-
 ## Related Documentation
 
 - [Architecture Overview](./docs/architecture.md) - System design and data flow
 - [API Examples](./docs/api-examples.md) - Detailed API usage examples
 - [Local Development](./docs/local-development.md) - Development setup and testing
 - [Future Improvements](./docs/future-improvements.md) - Roadmap and planned features
-
-## License
-
-MIT
-  ]
-  timestamp: string         // ISO 8601 timestamp
-  userAgent?: string        // Client user agent
-}
-```
-
-## Configuration
-
-### Environment Variables
-
-#### Redis Configuration
-
-**Standalone Mode:**
-```bash
-REDIS_MODE=standalone
-REDIS_HOST=localhost
-REDIS_PORT=6379
-```
-
-**Sentinel Mode (Production):**
-```bash
-REDIS_MODE=sentinel
-REDIS_MASTER_NAME=mymaster
-REDIS_SENTINEL_1_HOST=sentinel1
-REDIS_SENTINEL_1_PORT=26379
-REDIS_SENTINEL_2_HOST=sentinel2
-REDIS_SENTINEL_2_PORT=26379
-REDIS_SENTINEL_3_HOST=sentinel3
-REDIS_SENTINEL_3_PORT=26379
-```
-
-#### OpenSearch Configuration
-
-```bash
-OPENSEARCH_HOST=http://localhost:9200
-OPENSEARCH_USERNAME=admin
-OPENSEARCH_PASSWORD=admin
-
-# Optional TLS
-OPENSEARCH_USE_TLS=false
-OPENSEARCH_SSL_VERIFY=true
-```
-
-#### Application Configuration
-
-```bash
-PORT=3001
-CORS_ALLOWED_ORIGIN=*
-QUEUE_NAME=search-metrics
-METRICS_INDEX_PREFIX=search-metrics
-METRICS_RETENTION_DAYS=30
-```
-
-### Index Management
-
-Indices are created with the pattern: `search-metrics-YYYY-MM-DD`
-
-The service automatically:
-- Creates daily indices
-- Applies index templates with optimized mappings
-- Supports nested document structures for hit arrays
-
-To manually manage retention, query OpenSearch directly or implement ILM policies.
-
-## Development
-
-```bash
-# Run tests
-npm run test
-
-# Run tests in watch mode
-npm run test:watch
-
-# Run tests with coverage
-npm run test:cov
-
-# Lint code
-npm run lint
-
-# Format code
-npm run format
-```
-
-## Production Deployment
-
-### Recommended Setup
-
-1. **Redis Sentinel** - Use Redis Sentinel cluster for high availability
-2. **OpenSearch Cluster** - Multi-node cluster with replicas
-3. **Horizontal Scaling** - Run multiple Stats Goblin instances as BullMQ workers
-4. **Monitoring** - Monitor queue depth, processing lag, and error rates
-5. **Alerts** - See `docs/future-improvements.md` for alerting strategies
-
-### Performance Tuning
-
-- **Worker Concurrency**: Configure BullMQ concurrency based on CPU/memory
-- **Batch Indexing**: Consider bulk indexing for high-throughput scenarios
-- **Index Shards**: Adjust shard count based on data volume
-- **Query Caching**: Enable OpenSearch query cache for analytics endpoints
-
-## Monitoring
-
-### Key Metrics to Track
-
-- **Queue Depth**: Check `/health/redis` for waiting jobs
-- **Processing Rate**: Jobs processed per minute
-- **Error Rate**: Failed jobs in queue
-- **OpenSearch Health**: Cluster status and shard allocation
-- **API Latency**: Response times for analytics endpoints
-
-### Health Check Integration
-
-Integrate health endpoints with:
-- Kubernetes liveness/readiness probes
-- Load balancer health checks
-- Monitoring systems (Datadog, New Relic, etc.)
-
-## Troubleshooting
-
-### Queue Not Processing
-
-1. Check Redis connectivity: `GET /health/redis`
-2. Verify queue name matches producer configuration
-3. Check worker logs for errors
-4. Verify BullMQ connection settings
-
-### OpenSearch Indexing Failures
-
-1. Check OpenSearch health: `GET /health/opensearch`
-2. Verify credentials and permissions
-3. Check disk space on OpenSearch nodes
-4. Review index template mapping conflicts
-
-### Analytics Queries Slow
-
-1. Add more replica shards for read capacity
-2. Implement pre-aggregation (see future improvements)
-3. Reduce query time range
-4. Enable OpenSearch query cache
-
-## Future Improvements
-
-See [`docs/future-improvements.md`](./docs/future-improvements.md) for planned enhancements:
-
-- Prometheus metrics exporter
-- AlertManager integration
-- Advanced ML-based analytics
-- Real-time streaming dashboards
-- Multi-tenancy support
-
-## Tests
-
-### Spec Tests
-```bash
-$ npm run test
-```
-
-### e2e tests
-```bash
-$ npm run test:e2e
-```
-
-### Test Coverage
-```bash
-# test coverage
-$ npm run test:cov
-```
 
 ## License
 

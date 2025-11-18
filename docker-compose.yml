@@ -1,3 +1,4 @@
+name: analytics-goblin
 services:
   redis:
     image: redis:7-alpine
@@ -11,34 +12,5 @@ services:
       timeout: 3s
       retries: 3
 
-  opensearch:
-    image: opensearchproject/opensearch:2.11.1
-    environment:
-      - discovery.type=single-node
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Admin123!
-      - "DISABLE_SECURITY_PLUGIN=true"
-    ports:
-      - "9200:9200"
-      - "9600:9600"
-    volumes:
-      - opensearch-data:/usr/share/opensearch/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  opensearch-dashboards:
-    image: opensearchproject/opensearch-dashboards:2.11.1
-    ports:
-      - "5601:5601"
-    environment:
-      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
-      - "DISABLE_SECURITY_DASHBOARDS_PLUGIN=true"
-    depends_on:
-      opensearch:
-        condition: service_healthy
-
 volumes:
   redis-data:
-  opensearch-data:

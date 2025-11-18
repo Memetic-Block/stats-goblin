@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Client } from '@opensearch-project/opensearch'
-import { UbiQuery } from '../analytics/interfaces/analytics.interface'
+import { UbiQuery, UbiEvent } from '../analytics/interfaces/analytics.interface'
 
 @Injectable()
 export class OpenSearchService implements OnModuleInit {
@@ -171,6 +171,68 @@ export class OpenSearchService implements OnModuleInit {
       } catch (error: any) {
         this.logger.error(
           `Failed to bulk index chunk ${i / chunkSize + 1} (${chunk.length} documents): ${error.message}`
+        )
+      }
+    }
+  }
+
+  /**
+   * Index a single event document to ubi_events
+   * Uses index operation (not create) as events can have duplicate action tracking
+   */
+  async indexEvent(document: UbiEvent): Promise<void> {
+    try {
+      await this.client.index({
+        index: 'ubi_events',
+        body: document,
+        refresh: false
+      })
+    } catch (error: any) {
+      // Log errors with metadata only
+      this.logger.error(
+        `Failed to index event - query_id: ${document.query_id}, action_name: ${document.action_name}, client_id: ${document.client_id}, error: ${error.message}`
+      )
+    }
+  }
+
+  /**
+   * Bulk index multiple event documents to ubi_events
+   * Processes documents in chunks to avoid OpenSearch bulk request size limits
+   */
+  async bulkIndexEvents(documents: UbiEvent[], chunkSize: number): Promise<void> {
+    // Split documents into chunks
+    for (let i = 0; i < documents.length; i += chunkSize) {
+      const chunk = documents.slice(i, i + chunkSize)
+      
+      try {
+        // Build bulk operations (use index not create - events can be duplicate actions)
+        const operations = chunk.flatMap(doc => [
+          { index: { _index: 'ubi_events' } },
+          doc
+        ])
+
+        const response = await this.client.bulk({
+          body: operations,
+          refresh: false
+        })
+
+        // Log errors from bulk response
+        if (response.body.errors) {
+          const erroredDocs = response.body.items
+            .filter((item: any) => item.index?.error)
+            .map((item: any) => ({
+              error: item.index.error.reason || 'Unknown error'
+            }))
+
+          if (erroredDocs.length > 0) {
+            this.logger.error(
+              `Bulk event indexing errors (chunk ${i / chunkSize + 1}): ${JSON.stringify(erroredDocs)}`
+            )
+          }
+        }
+      } catch (error: any) {
+        this.logger.error(
+          `Failed to bulk index events chunk ${i / chunkSize + 1} (${chunk.length} documents): ${error.message}`
         )
       }
     }

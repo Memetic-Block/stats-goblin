@@ -7,6 +7,7 @@ import {
   Matches,
   ArrayMaxSize
 } from 'class-validator'
+import { IsValidClientId } from '../../common/validators/client-id.validator'
 
 /**
  * DTO for submitting a query to UBI (User Behavior Insights) following UBI 1.3.0 schema
@@ -24,9 +25,8 @@ export class SubmitQueryDto {
   @MaxLength(100)
   query_id?: string
 
-  @IsString()
   @IsOptional()
-  @MaxLength(100)
+  @IsValidClientId()
   client_id?: string
 
   @IsString()
