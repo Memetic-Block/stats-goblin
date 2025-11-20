@@ -1,6 +1,6 @@
 # Analytics Goblin 📊👹
 
-A NestJS-based telemetry service for tracking client-side search behavior using OpenSearch with UBI (User Behavior Insights) 1.3.0 specification.
+A NestJS-based telemetry service for tracking client-side user behavior using OpenSearch with UBI (User Behavior Insights) 1.3.0 specification.
 
 ## Features
 
