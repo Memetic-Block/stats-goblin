@@ -49,7 +49,6 @@ job "analytics-goblin-stage" {
         
         # Redis config
         REDIS_MODE="standalone"
-        REDIS_PORT="6379"
         
         # Analytics config
         ALLOWED_APPLICATIONS="graphql-images,graphql-video,graphql-audio"
@@ -69,8 +68,9 @@ job "analytics-goblin-stage" {
         {{- range service "wuzzy-opensearch-stage-hel-1" }}
         OPENSEARCH_HOST="http://{{ .Address }}:{{ .Port }}"
         {{- end }}
-        {{- range service "wuzzy-redis-stage-hel-1" }}
+        {{- range service "analytics-goblin-redis-stage" }}
         REDIS_HOST="{{ .Address }}"
+        REDIS_PORT="{{ .Port }}"
         {{- end }}
         {{- range service "container-registry" }}
         CONTAINER_REGISTRY_ADDR="{{ .Address }}:{{ .Port }}"
@@ -93,8 +93,8 @@ job "analytics-goblin-stage" {
       }
 
       resources {
-        cpu    = 512
-        memory = 512
+        cpu    = 1024
+        memory = 1024
       }
 
       service {

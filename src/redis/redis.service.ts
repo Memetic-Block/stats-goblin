@@ -12,39 +12,71 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     const mode = this.configService.get('redis.mode', 'standalone')
 
-    if (mode === 'sentinel') {
-      const sentinels = this.configService.get('redis.sentinels', [])
-      const masterName = this.configService.get('redis.masterName', 'mymaster')
+    try {
+      if (mode === 'sentinel') {
+        const sentinels = this.configService.get('redis.sentinels', [])
+        const masterName = this.configService.get('redis.masterName', 'mymaster')
 
-      this.client = new Redis({
-        sentinels,
-        name: masterName,
-        retryStrategy: (times) => {
-          const delay = Math.min(times * 50, 2000)
-          return delay
-        }
+        this.client = new Redis({
+          sentinels,
+          name: masterName,
+          retryStrategy: (times) => {
+            // Stop retrying during initialization
+            if (times > 3) {
+              this.logger.error('Redis connection failed after 3 attempts')
+              return null
+            }
+            const delay = Math.min(times * 50, 2000)
+            return delay
+          },
+          maxRetriesPerRequest: 1,
+          enableReadyCheck: true,
+          lazyConnect: false
+        })
+
+        this.logger.log(`Connecting to Redis Sentinel: ${masterName}`)
+      } else {
+        const host = this.configService.get('redis.host', 'localhost')
+        const port = this.configService.get('redis.port', 6379)
+
+        this.client = new Redis({
+          host,
+          port,
+          retryStrategy: (times) => {
+            // Stop retrying during initialization
+            if (times > 3) {
+              this.logger.error('Redis connection failed after 3 attempts')
+              return null
+            }
+            const delay = Math.min(times * 50, 2000)
+            return delay
+          },
+          maxRetriesPerRequest: 1,
+          enableReadyCheck: true,
+          lazyConnect: false
+        })
+
+        this.logger.log(`Connecting to Redis: ${host}:${port}`)
+      }
+
+      this.client.on('error', (err) => {
+        this.logger.error('Redis error:', err)
       })
 
-      this.logger.log(`Connected to Redis Sentinel: ${masterName}`)
-    } else {
-      const host = this.configService.get('redis.host', 'localhost')
-      const port = this.configService.get('redis.port', 6379)
-
-      this.client = new Redis({
-        host,
-        port,
-        retryStrategy: (times) => {
-          const delay = Math.min(times * 50, 2000)
-          return delay
-        }
-      })
-
-      this.logger.log(`Connected to Redis: ${host}:${port}`)
+      // Verify Redis is responsive before continuing startup
+      const pingResult = await this.client.ping()
+      if (pingResult !== 'PONG') {
+        throw new Error('Redis ping failed')
+      }
+      this.logger.log('Redis health check passed')
+    } catch (error) {
+      this.logger.error('Failed to connect to Redis:', error)
+      // Disconnect client to stop retry attempts
+      if (this.client) {
+        this.client.disconnect()
+      }
+      throw new Error(`Redis initialization failed: ${error.message}`)
     }
-
-    this.client.on('error', (err) => {
-      this.logger.error('Redis error:', err)
-    })
   }
 
   async onModuleDestroy() {
